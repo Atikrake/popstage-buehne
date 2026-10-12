@@ -1,4 +1,4 @@
-import type { Contestant } from './types';
+import type { Contestant, Look } from './types';
 
 /**
  * Five stand-ins for the demo. In the app every one of them is a real player:
@@ -57,3 +57,21 @@ export const CAST: Contestant[] = [
     look: { skin: '#F2CBB0', hair: '#C99A55', hairStyle: 'long', top: '#FFFFFF', light: ['#FFF4D6', '#FFD37A'] },
   },
 ];
+
+/** The host in the demo: you. */
+export const DEMO_HOST = { id: 'host', name: 'Du' };
+
+/** How the host is drawn while there is no camera. */
+export const HOST_LOOK: Look = {
+  skin: '#E7B596',
+  hair: '#24160F',
+  hairStyle: 'swept',
+  top: '#16101A',
+  light: ['#FFE0EC', '#FF5C9C'],
+};
+
+/** Colours handed out to real players, by seat. */
+export const SEAT_COLORS = ['#FF3D8B', '#FF8A4C', '#A97BFF', '#2FC7A8', '#FFC23D', '#4FA8FF'];
+
+/** Stand-in looks for real players whose camera has not come up yet. */
+export const SEAT_LOOKS: Look[] = CAST.map((one) => one.look);

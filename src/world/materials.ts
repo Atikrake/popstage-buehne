@@ -76,6 +76,9 @@ export function makeScreenMaterial(map: THREE.Texture) {
       uBright: { value: 1 },
       uBreath: { value: 0 },
       uTint: { value: new THREE.Color('#ffffff') },
+      // Cover-crop for pictures whose shape is not the screen's (a phone camera).
+      uRepeat: { value: new THREE.Vector2(1, 1) },
+      uOffset: { value: new THREE.Vector2(0, 0) },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -92,12 +95,15 @@ export function makeScreenMaterial(map: THREE.Texture) {
       uniform float uBright;
       uniform float uBreath;
       uniform vec3 uTint;
+      uniform vec2 uRepeat;
+      uniform vec2 uOffset;
       varying vec2 vUv;
       float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
       void main() {
         // A slow breath, so a stand-in reads as a live picture and not a photo.
         vec2 uv = (vUv - 0.5) * (1.0 - uBreath * 0.012) + 0.5;
         uv.y += sin(uTime * 1.3) * 0.003 * uBreath;
+        uv = uv * uRepeat + uOffset;
         vec3 color = texture2D(uMap, uv).rgb * uTint;
         float n = hash(floor(vUv * vec2(160.0, 220.0)) + floor(uTime * 24.0));
         float tear = step(0.92, hash(vec2(floor(vUv.y * 40.0), floor(uTime * 12.0))));
@@ -111,6 +117,28 @@ export function makeScreenMaterial(map: THREE.Texture) {
       }
     `,
   });
+}
+
+/**
+ * Fills a screen with a picture without stretching it: whatever does not fit
+ * the screen's shape is cut off evenly, the way a phone fills its screen with
+ * the camera. `mirror` flips it for a self-view.
+ */
+export function coverScreen(material: THREE.ShaderMaterial, texture: THREE.Texture, screenAspect: number, mirror = false) {
+  const image = texture.image as { videoWidth?: number; videoHeight?: number; width?: number; height?: number } | undefined;
+  const w = image?.videoWidth || image?.width || 1;
+  const h = image?.videoHeight || image?.height || 1;
+  const aspect = w / h;
+  const repeat = material.uniforms.uRepeat.value as THREE.Vector2;
+  const offset = material.uniforms.uOffset.value as THREE.Vector2;
+  if (aspect > screenAspect) repeat.set(screenAspect / aspect, 1);
+  else repeat.set(1, aspect / screenAspect);
+  offset.set((1 - repeat.x) / 2, (1 - repeat.y) / 2);
+  if (mirror) {
+    offset.x += repeat.x;
+    repeat.x = -repeat.x;
+  }
+  if (material.uniforms.uMap.value !== texture) material.uniforms.uMap.value = texture;
 }
 
 /** An emissive surface that glows past white — the bloom picks it up. */

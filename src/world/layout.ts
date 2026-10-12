@@ -113,6 +113,18 @@ export function presentShot(s: Seat, aspect: number, push: number): Shot {
   return { position, target, fov: THREE.MathUtils.lerp(wideFov, close.fov, push) };
 }
 
+/**
+ * The other way round: from behind the contestants towards the host's desk,
+ * as the contestants see the host. `closeness` 0 → 1 moves up to the desk.
+ */
+export function reverseShot(aspect: number, closeness = 0): Shot {
+  const far = new THREE.Vector3(0.7, 3.0, -6.2);
+  const near = new THREE.Vector3(0.2, 2.05, 2.6);
+  const position = far.clone().lerp(near, closeness);
+  const target = new THREE.Vector3(0, 1.72, HOST_DESK.z);
+  return { position, target, fov: fovToFit(THREE.MathUtils.lerp(34, 40, closeness), THREE.MathUtils.lerp(1.6, 1.0, closeness), position.distanceTo(target), aspect) };
+}
+
 /** Halfway between the host's view and one contestant: for the answering rounds. */
 export function answerShot(s: Seat, aspect: number): Shot {
   // The question on the wall above, the one answering lit in the middle.

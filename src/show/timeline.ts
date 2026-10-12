@@ -1,4 +1,4 @@
-import { DUR, ROUND_MS } from './config';
+import { DUR, TURN_MS } from './config';
 import { presentationLength } from './engine';
 import { mix, rng } from './seed';
 import type { ShowState } from './types';
@@ -13,38 +13,33 @@ export function elapsedOf(state: ShowState, now: number) {
   return Math.max(0, now - state.phaseStart);
 }
 
-/** During the presentation: whose turn it is, or -1 for the closing line-up. */
-export function presentIndex(state: ShowState, now: number) {
+export type PresentSlot =
+  | { kind: 'host'; progress: number }
+  | { kind: 'contestant'; index: number; progress: number }
+  | { kind: 'lineup'; progress: number };
+
+/** During the presentation: the host first, then each contestant, then everybody. */
+export function presentSlot(state: ShowState, now: number): PresentSlot {
   const t = elapsedOf(state, now);
   const n = state.contestants.length;
-  const index = Math.floor(t / DUR.presentEach);
-  return index >= n || t >= presentationLength(n) - DUR.presentOutro ? -1 : index;
+  if (t < DUR.presentHost) return { kind: 'host', progress: t / DUR.presentHost };
+  const after = t - DUR.presentHost;
+  const index = Math.floor(after / DUR.presentEach);
+  if (index < n) return { kind: 'contestant', index, progress: (after % DUR.presentEach) / DUR.presentEach };
+  const outroStart = presentationLength(n) - DUR.presentOutro;
+  return { kind: 'lineup', progress: Math.min(1, (t - outroStart) / DUR.presentOutro) };
 }
 
-/** Progress through the current presentation slot, 0 → 1. */
-export function presentProgress(state: ShowState, now: number) {
+export type Turn = { id: string; index: number; count: number; left: number; progress: number };
+
+/** While answering: whose turn it is and how much of their ten seconds is left. */
+export function currentTurn(state: ShowState, now: number): Turn | null {
+  const count = state.standing.length;
+  if (state.phase !== 'answering' || count === 0) return null;
   const t = elapsedOf(state, now);
-  return (t % DUR.presentEach) / DUR.presentEach;
-}
-
-export function remainingMs(state: ShowState, now: number) {
-  if (state.phase === 'answering') return Math.max(0, ROUND_MS - elapsedOf(state, now));
-  if (state.phase === 'choosing' || state.phase === 'roundStart') return ROUND_MS;
-  return 0;
-}
-
-/**
- * While answers run: who is in the light. A tap from the host holds the light
- * on that person for a while; otherwise it moves along the row on its own.
- */
-export function answeringFocus(state: ShowState, now: number): string | null {
-  if (state.standing.length === 0) return null;
-  if (state.focus && now - state.focus.at < DUR.manualFocusHold && state.standing.includes(state.focus.id)) {
-    return state.focus.id;
-  }
-  const t = elapsedOf(state, now);
-  const step = Math.floor(t / DUR.autoFocus);
-  return state.standing[step % state.standing.length];
+  const index = Math.min(count - 1, Math.floor(t / TURN_MS));
+  const into = t - index * TURN_MS;
+  return { id: state.standing[index], index, count, left: Math.max(0, TURN_MS - into), progress: Math.min(1, into / TURN_MS) };
 }
 
 export type Hop = { at: number; id: string };
@@ -75,8 +70,7 @@ export function verdictHops(state: ShowState): Hop[] {
   let last = '';
   times.forEach((time, index) => {
     let id: string;
-    if (index === times.length - 1) id = target;
-    else if (ids.length === 1) id = target;
+    if (index === times.length - 1 || ids.length === 1) id = target;
     else {
       // Never the same twice running, and never the target just before landing.
       const choices = ids.filter((one) => one !== last && (index !== times.length - 2 || one !== target));
@@ -101,11 +95,13 @@ export function verdictSpot(hops: Hop[], t: number): string | null {
 export function spotlightOn(state: ShowState, now: number): string | null {
   switch (state.phase) {
     case 'presentation': {
-      const index = presentIndex(state, now);
-      return index >= 0 ? state.contestants[index].id : null;
+      const slot = presentSlot(state, now);
+      return slot.kind === 'contestant' ? state.contestants[slot.index].id : null;
     }
     case 'answering':
-      return answeringFocus(state, now);
+      return currentTurn(state, now)?.id ?? null;
+    case 'deciding':
+      return state.selected;
     case 'verdict':
       return verdictSpot(verdictHops(state), elapsedOf(state, now));
     case 'pop':
@@ -113,9 +109,4 @@ export function spotlightOn(state: ShowState, now: number): string | null {
     default:
       return null;
   }
-}
-
-/** The ones celebrated at the end. */
-export function winners(state: ShowState) {
-  return state.standing;
 }

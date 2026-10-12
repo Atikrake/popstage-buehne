@@ -351,19 +351,59 @@ export type LedView =
   | { kind: 'off' }
   | { kind: 'boot'; progress: number }
   | { kind: 'logo' }
+  | { kind: 'host'; name: string }
   /** `anchor`: the point on the wall (in metres from its middle) the profile is centred on — above the person. */
   | { kind: 'profile'; contestant: Contestant; index: number; total: number; progress: number; anchor: number }
   | { kind: 'lineup'; contestants: Contestant[] }
   | { kind: 'round'; round: number; total: number }
-  | { kind: 'choose'; round: number }
-  | { kind: 'question'; round: number; text: string | null; seconds: number; fraction: number }
-  | { kind: 'verdict'; round: number }
+  | { kind: 'choose'; round: number; total: number }
+  | {
+      kind: 'question';
+      round: number;
+      total: number;
+      text: string | null;
+      /** Whose turn it is to answer, and how much of it is left. */
+      turn: { name: string; color: string; seconds: number; fraction: number; index: number; count: number } | null;
+    }
+  | { kind: 'decide'; round: number; total: number }
+  | { kind: 'verdict'; round: number; total: number }
   | { kind: 'out'; contestant: Contestant }
-  | { kind: 'allStay' }
   | { kind: 'winner'; contestants: Contestant[] }
   | { kind: 'empty' };
 
-function ledBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, tint = PINK) {
+/**
+ * What makes one LED picture different from another. The wall is only
+ * repainted when this changes — painting a canvas with glows and uploading it
+ * to the graphics card is far too costly to do on every frame.
+ */
+export function ledKey(view: LedView): string {
+  switch (view.kind) {
+    case 'boot':
+      return `boot-${Math.floor(view.progress * 10)}`;
+    case 'profile': {
+      const chips = view.contestant.vibes.filter((_, index) => view.progress > 0.1 + index * 0.07).length;
+      return `profile-${view.contestant.id}-${chips}-${view.progress > 0.28 ? 1 : 0}-${view.anchor.toFixed(2)}`;
+    }
+    case 'question':
+      return `question-${view.round}-${view.text}-${view.turn ? `${view.turn.name}-${view.turn.seconds}` : ''}`;
+    case 'host':
+      return `host-${view.name}`;
+    case 'lineup':
+    case 'winner':
+      return `${view.kind}-${view.contestants.map((c) => c.id).join(',')}`;
+    case 'out':
+      return `out-${view.contestant.id}`;
+    case 'round':
+    case 'choose':
+    case 'decide':
+    case 'verdict':
+      return `${view.kind}-${view.round}`;
+    default:
+      return view.kind;
+  }
+}
+
+function ledBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, tint = PINK) {
   const bg = ctx.createRadialGradient(W / 2, H * 0.42, 40, W / 2, H / 2, W * 0.75);
   bg.addColorStop(0, '#3B0B27');
   bg.addColorStop(0.55, '#1C0613');
@@ -371,7 +411,7 @@ function ledBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: num
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // A floor grid running away to the horizon, drifting slowly towards us.
+  // A floor grid running away to the horizon.
   const horizon = H * 0.58;
   ctx.save();
   ctx.strokeStyle = rgba(tint, 0.22);
@@ -382,9 +422,8 @@ function ledBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: num
     ctx.lineTo(W / 2 + i * 150, H);
     ctx.stroke();
   }
-  const drift = (t * 0.25) % 1;
-  for (let i = 0; i < 9; i += 1) {
-    const k = (i + drift) / 9;
+  for (let i = 1; i < 10; i += 1) {
+    const k = i / 9;
     const y = horizon + (H - horizon) * k * k;
     ctx.globalAlpha = 0.25 + k * 0.5;
     ctx.beginPath();
@@ -402,11 +441,11 @@ function ledBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: num
   ctx.fillRect(0, horizon - 40, W, 80);
 }
 
-function ledTopBar(ctx: CanvasRenderingContext2D, W: number, right: string, t: number) {
+function ledTopBar(ctx: CanvasRenderingContext2D, W: number, right: string) {
   ctx.save();
   ctx.font = `700 22px ${DISPLAY}`;
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = Math.sin(t * 4) > -0.3 ? '#FF2B4A' : '#7A1424';
+  ctx.fillStyle = '#FF2B4A';
   ctx.beginPath();
   ctx.arc(46, 40, 8, 0, Math.PI * 2);
   ctx.fill();
@@ -465,8 +504,21 @@ function wordmark(ctx: CanvasRenderingContext2D, cx: number, y: number, size: nu
   ctx.restore();
 }
 
-/** Paints one moment of the LED wall. `t` is seconds, for the slow ambient motion. */
-export function drawLed(ctx: CanvasRenderingContext2D, W: number, H: number, view: LedView, t: number) {
+/** Two lines at most, in the largest size that fits. */
+function fitLines(ctx: CanvasRenderingContext2D, text: string, width: number, from: number, to: number) {
+  const clean = text.replace(/\s*\n\s*/g, ' ');
+  let size = from;
+  let lines: string[] = [];
+  for (size = from; size >= to; size -= 4) {
+    ctx.font = `800 ${size}px ${DISPLAY}`;
+    lines = wrap(ctx, clean, width);
+    if (lines.length <= 2) break;
+  }
+  return { size, lines: lines.slice(0, 2) };
+}
+
+/** Paints one moment of the LED wall. */
+export function drawLed(ctx: CanvasRenderingContext2D, W: number, H: number, view: LedView) {
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
@@ -490,7 +542,7 @@ export function drawLed(ctx: CanvasRenderingContext2D, W: number, H: number, vie
       ctx.fillRect((index * W) / bars.length, 0, (W / bars.length) * shown, H * 0.72);
     });
     ctx.globalAlpha = 1;
-    for (let i = 0; i < 900; i += 1) {
+    for (let i = 0; i < 700; i += 1) {
       ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.5})`;
       ctx.fillRect(Math.random() * W, Math.random() * H, 3, 3);
     }
@@ -500,42 +552,53 @@ export function drawLed(ctx: CanvasRenderingContext2D, W: number, H: number, vie
 
   const tint =
     view.kind === 'out' ? view.contestant.color : view.kind === 'profile' ? view.contestant.color : view.kind === 'winner' ? '#FFC23D' : PINK;
-  ledBackdrop(ctx, W, H, t, tint);
+  ledBackdrop(ctx, W, H, tint);
 
   switch (view.kind) {
     case 'logo': {
-      ledTopBar(ctx, W, 'HEUTE LIVE', t);
+      ledTopBar(ctx, W, 'HEUTE LIVE');
       heart(ctx, W / 2, H * 0.3, 92, PINK);
-      ctx.textAlign = 'left';
       wordmark(ctx, W / 2, H * 0.6, 132);
       ctx.textAlign = 'center';
       ctx.font = `600 30px ${BODY}`;
       ctx.fillStyle = 'rgba(255,255,255,0.8)';
-      ctx.fillText('Die Dating-Show  ·  5 Kandidaten  ·  5 Runden', W / 2, H * 0.74);
+      ctx.fillText('Die Dating-Show  ·  Wer bleibt bis zum Schluss?', W / 2, H * 0.74);
+      break;
+    }
+    case 'host': {
+      ledTopBar(ctx, W, 'DEIN HOST');
+      ctx.textAlign = 'center';
+      ctx.font = `800 30px ${DISPLAY}`;
+      ctx.fillStyle = PINK;
+      ctx.fillText('HEUTE FÜHRT DURCH DIE SHOW', W / 2, 160);
+      glowText(ctx, view.name.toUpperCase(), W / 2, 300, `800 140px ${DISPLAY}`, '#FFFFFF', rgba(PINK, 0.9), 44);
+      ctx.font = `600 32px ${BODY}`;
+      ctx.fillStyle = 'rgba(255,255,255,0.82)';
+      ctx.fillText('Stellt die Fragen  ·  entscheidet, wer geht', W / 2, 372);
       break;
     }
     case 'profile': {
       const c = view.contestant;
-      ledTopBar(ctx, W, `KANDIDAT ${view.index + 1} VON ${view.total}`, t);
-      // A card-sized block above wherever the person stands.
+      ledTopBar(ctx, W, `KANDIDAT ${view.index + 1} VON ${view.total}`);
+      // A card-sized block above wherever the person stands, kept to the
+      // upper part of the wall: the balloons float in front of the lower part.
       const BW = 520;
       const x = Math.min(W - 40 - BW, Math.max(40, W / 2 + (view.anchor / 7.8) * W - BW / 2));
-      // Kept to the upper part of the wall: the balloons float in front of the lower part.
       ctx.font = `800 22px ${DISPLAY}`;
       ctx.fillStyle = c.color;
       ctx.fillText(`KANDIDAT ${view.index + 1}`, x, 108);
       glowText(ctx, c.name.toUpperCase(), x - 4, 198, `800 100px ${DISPLAY}`, '#FFFFFF', rgba(c.color, 0.85), 32);
       ctx.font = `700 32px ${BODY}`;
       ctx.fillStyle = 'rgba(255,255,255,0.92)';
-      ctx.fillText(`${c.age} Jahre`, x, 252);
-      let cx = x + ctx.measureText(`${c.age} Jahre`).width + 20;
+      const ageText = c.age ? `${c.age} Jahre` : '';
+      ctx.fillText(ageText, x, 252);
+      let cx = x + (ageText ? ctx.measureText(ageText).width + 20 : 0);
       chip(ctx, c.persona, cx, 241, c.color, true);
-      // Vibes, one after another as the slot runs.
       cx = x;
       c.vibes.forEach((vibe, index) => {
         if (view.progress > 0.1 + index * 0.07) cx += chip(ctx, vibe, cx, 306, c.color) + 12;
       });
-      if (view.progress > 0.28) {
+      if (view.progress > 0.28 && c.bio) {
         ctx.font = `500 27px ${BODY}`;
         ctx.fillStyle = 'rgba(255,255,255,0.88)';
         wrap(ctx, `„${c.bio}“`, BW).slice(0, 2).forEach((line, index) => ctx.fillText(line, x, 364 + index * 36));
@@ -543,136 +606,114 @@ export function drawLed(ctx: CanvasRenderingContext2D, W: number, H: number, vie
       break;
     }
     case 'lineup': {
-      ledTopBar(ctx, W, 'DIE KANDIDATEN', t);
+      ledTopBar(ctx, W, 'DIE KANDIDATEN');
       ctx.textAlign = 'center';
-      glowText(ctx, 'DAS SIND EURE', W / 2, 170, `800 54px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.5)');
-      glowText(ctx, 'KANDIDATEN', W / 2, 262, `800 104px ${DISPLAY}`, PINK, rgba(PINK, 0.9), 40);
+      glowText(ctx, 'DAS SIND EURE', W / 2, 150, `800 50px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.5)');
+      glowText(ctx, 'KANDIDATEN', W / 2, 236, `800 96px ${DISPLAY}`, PINK, rgba(PINK, 0.9), 40);
       ctx.textAlign = 'left';
-      ctx.font = `700 34px ${BODY}`;
+      ctx.font = `700 32px ${BODY}`;
       const names = view.contestants;
-      const widths = names.map((c) => ctx.measureText(c.name).width + 56);
+      const widths = names.map((c) => ctx.measureText(c.name).width + 54);
       let x = (W - widths.reduce((a, b) => a + b, 0)) / 2;
       names.forEach((c, index) => {
-        heart(ctx, x + 14, 382, 26, c.color);
+        heart(ctx, x + 14, 316, 26, c.color);
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(c.name, x + 34, 394);
+        ctx.fillText(c.name, x + 34, 328);
         x += widths[index];
       });
       break;
     }
     case 'round': {
-      ledTopBar(ctx, W, `RUNDE ${view.round} / ${view.total}`, t);
+      ledTopBar(ctx, W, `RUNDE ${view.round} / ${view.total}`);
       ctx.textAlign = 'center';
-      ctx.font = `800 40px ${DISPLAY}`;
+      ctx.font = `800 36px ${DISPLAY}`;
       ctx.fillStyle = 'rgba(255,255,255,0.75)';
-      ctx.fillText('RUNDE', W / 2, 168);
-      glowText(ctx, String(view.round), W / 2, 392, `800 250px ${DISPLAY}`, '#FFFFFF', rgba(PINK, 0.95), 60);
+      ctx.fillText('RUNDE', W / 2, 130);
+      glowText(ctx, String(view.round), W / 2, 330, `800 230px ${DISPLAY}`, '#FFFFFF', rgba(PINK, 0.95), 60);
       ctx.font = `600 30px ${BODY}`;
       ctx.fillStyle = PINK_SOFT;
-      ctx.fillText(view.round === view.total ? 'Die letzte Runde' : `von ${view.total}`, W / 2, 460);
+      ctx.fillText(view.round === view.total ? 'Das Finale um den Sieg' : `von ${view.total}  ·  einer muss gehen`, W / 2, 384);
       break;
     }
     case 'choose': {
-      ledTopBar(ctx, W, `RUNDE ${view.round} / 5`, t);
+      ledTopBar(ctx, W, `RUNDE ${view.round} / ${view.total}`);
       ctx.textAlign = 'center';
-      glowText(ctx, 'DER HOST WÄHLT', W / 2, 200, `800 64px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.4)');
-      glowText(ctx, 'DIE FRAGE', W / 2, 286, `800 84px ${DISPLAY}`, PINK, rgba(PINK, 0.9), 36);
-      const dots = '•'.repeat(1 + (Math.floor(t * 2.5) % 3));
-      ctx.font = `700 48px ${DISPLAY}`;
-      ctx.fillStyle = 'rgba(255,255,255,0.7)';
-      ctx.fillText(dots, W / 2, 372);
+      glowText(ctx, 'DER HOST WÄHLT', W / 2, 190, `800 62px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.4)');
+      glowText(ctx, 'DIE FRAGE', W / 2, 276, `800 84px ${DISPLAY}`, PINK, rgba(PINK, 0.9), 36);
       break;
     }
     case 'question': {
-      ledTopBar(ctx, W, `RUNDE ${view.round} / 5`, t);
-      // Centred and kept high: balloons float in front of the lower part.
+      ledTopBar(ctx, W, `RUNDE ${view.round} / ${view.total}`);
+      // Centred and kept high: the balloons float in front of the lower part.
       const BW = 540;
       ctx.textAlign = 'center';
       ctx.font = `800 22px ${DISPLAY}`;
       ctx.fillStyle = PINK;
-      ctx.fillText(view.text ? 'DIE FRAGE' : 'DER HOST FRAGT SELBST', W / 2, 106);
-      // Always two lines at most: the largest size that fits.
-      const text = (view.text ?? 'Hört genau zu!').replace(/\s*\n\s*/g, ' ');
-      let size = 58;
-      let lines: string[] = [];
-      for (size = 58; size >= 34; size -= 4) {
-        ctx.font = `800 ${size}px ${DISPLAY}`;
-        lines = wrap(ctx, text, BW);
-        if (lines.length <= 2) break;
-      }
-      lines.slice(0, 2).forEach((line, index) =>
-        glowText(ctx, line, W / 2, 170 + index * (size + 10), `800 ${size}px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.35)', 18),
+      ctx.fillText(view.text ? 'DIE FRAGE' : 'DER HOST FRAGT SELBST', W / 2, 100);
+      const { size, lines } = fitLines(ctx, view.text ?? 'Hört genau zu!', BW, 54, 34);
+      lines.forEach((line, index) =>
+        glowText(ctx, line, W / 2, 158 + index * (size + 8), `800 ${size}px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.35)', 18),
       );
-      // The clock, as a bar that empties, with the seconds beside it.
-      const urgent = view.seconds <= 5;
-      const barY = 170 + Math.min(2, lines.length) * (size + 10) + 6;
-      roundRect(ctx, W / 2 - BW / 2, barY, BW, 14, 7);
-      ctx.fillStyle = 'rgba(255,255,255,0.12)';
-      ctx.fill();
-      roundRect(ctx, W / 2 - BW / 2, barY, Math.max(14, BW * view.fraction), 14, 7);
-      ctx.fillStyle = urgent ? '#FF3B4E' : PINK;
-      ctx.shadowColor = urgent ? '#FF3B4E' : PINK;
-      ctx.shadowBlur = 20;
-      ctx.fill();
-      ctx.shadowBlur = 0;
-      glowText(ctx, `0:${String(view.seconds).padStart(2, '0')}`, W / 2, barY + 60, `800 40px ${DISPLAY}`, urgent ? '#FF6B7A' : '#FFFFFF', urgent ? '#FF3B4E' : rgba(PINK, 0.6), 16);
+      const turn = view.turn;
+      if (turn) {
+        // Whose turn, and their ten seconds as a bar that empties.
+        const y = 158 + lines.length * (size + 8) + 4;
+        ctx.font = `800 30px ${DISPLAY}`;
+        ctx.fillStyle = turn.color;
+        ctx.fillText(`${turn.name.toUpperCase()} ANTWORTET  ·  ${turn.index + 1}/${turn.count}`, W / 2, y);
+        const barY = y + 22;
+        roundRect(ctx, W / 2 - BW / 2, barY, BW, 14, 7);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fill();
+        roundRect(ctx, W / 2 - BW / 2, barY, Math.max(14, BW * turn.fraction), 14, 7);
+        const urgent = turn.seconds <= 3;
+        ctx.fillStyle = urgent ? '#FF3B4E' : turn.color;
+        ctx.fill();
+        glowText(ctx, `0:${String(turn.seconds).padStart(2, '0')}`, W / 2, barY + 56, `800 38px ${DISPLAY}`, urgent ? '#FF6B7A' : '#FFFFFF', urgent ? '#FF3B4E' : rgba(turn.color, 0.6), 14);
+      }
+      break;
+    }
+    case 'decide': {
+      ledTopBar(ctx, W, `RUNDE ${view.round} / ${view.total}`);
+      ctx.textAlign = 'center';
+      ctx.font = `800 26px ${DISPLAY}`;
+      ctx.fillStyle = PINK_SOFT;
+      ctx.fillText('ALLE HABEN GEANTWORTET', W / 2, 140);
+      glowText(ctx, 'WEN POPPT', W / 2, 236, `800 92px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.5)', 30);
+      glowText(ctx, 'DER HOST?', W / 2, 334, `800 92px ${DISPLAY}`, PINK, rgba(PINK, 1), 44);
       break;
     }
     case 'verdict': {
-      ledTopBar(ctx, W, `RUNDE ${view.round} / 5`, t);
+      ledTopBar(ctx, W, `RUNDE ${view.round} / ${view.total}`);
       ctx.textAlign = 'center';
-      const pulse = 0.6 + 0.4 * Math.abs(Math.sin(t * 5));
-      ctx.globalAlpha = pulse;
-      glowText(ctx, 'WER MUSS', W / 2, 230, `800 104px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.5)', 30);
-      glowText(ctx, 'GEHEN?', W / 2, 352, `800 128px ${DISPLAY}`, PINK, rgba(PINK, 1), 48);
-      ctx.globalAlpha = 1;
+      glowText(ctx, 'WER MUSS', W / 2, 220, `800 104px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.5)', 30);
+      glowText(ctx, 'GEHEN?', W / 2, 342, `800 128px ${DISPLAY}`, PINK, rgba(PINK, 1), 48);
       break;
     }
     case 'out': {
       const c = view.contestant;
-      ledTopBar(ctx, W, 'POP!', t);
+      ledTopBar(ctx, W, 'POP!');
       ctx.textAlign = 'center';
-      glowText(ctx, c.name.toUpperCase(), W / 2, 270, `800 156px ${DISPLAY}`, '#FFFFFF', rgba(c.color, 0.9), 44);
-      glowText(ctx, 'MUSS GEHEN', W / 2, 370, `800 64px ${DISPLAY}`, c.color, rgba(c.color, 0.9), 30);
-      break;
-    }
-    case 'allStay': {
-      ledTopBar(ctx, W, 'ZEIT ABGELAUFEN', t);
-      ctx.textAlign = 'center';
-      glowText(ctx, 'ALLE', W / 2, 240, `800 130px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.5)', 30);
-      glowText(ctx, 'BLEIBEN!', W / 2, 370, `800 130px ${DISPLAY}`, PINK, rgba(PINK, 1), 48);
-      for (let i = 0; i < 7; i += 1) {
-        heart(ctx, 120 + i * 130, 470 + Math.sin(t * 3 + i) * 10, 40, i % 2 ? PINK : PINK_SOFT);
-      }
+      glowText(ctx, c.name.toUpperCase(), W / 2, 250, `800 150px ${DISPLAY}`, '#FFFFFF', rgba(c.color, 0.9), 44);
+      glowText(ctx, 'MUSS GEHEN', W / 2, 340, `800 62px ${DISPLAY}`, c.color, rgba(c.color, 0.9), 30);
       break;
     }
     case 'winner': {
-      const one = view.contestants.length === 1;
-      ledTopBar(ctx, W, 'FINALE', t);
+      ledTopBar(ctx, W, 'FINALE');
       ctx.textAlign = 'center';
       ctx.font = `800 40px ${DISPLAY}`;
       ctx.fillStyle = '#FFD36E';
-      ctx.fillText(one ? 'GEWONNEN HAT' : 'SIE HABEN ES GESCHAFFT', W / 2, 150);
-      if (one) {
-        glowText(ctx, view.contestants[0].name.toUpperCase(), W / 2, 330, `800 170px ${DISPLAY}`, '#FFFFFF', 'rgba(255,200,80,0.95)', 56);
-      } else {
-        ctx.font = `800 72px ${DISPLAY}`;
-        const names = view.contestants.map((c) => c.name.toUpperCase());
-        const rows = names.length > 3 ? [names.slice(0, 2), names.slice(2)] : [names];
-        rows.forEach((row, index) =>
-          glowText(ctx, row.join('  ·  '), W / 2, 280 + index * 92, `800 72px ${DISPLAY}`, '#FFFFFF', 'rgba(255,200,80,0.9)', 36),
-        );
-      }
-      for (let i = 0; i < 9; i += 1) {
-        heart(ctx, 80 + i * 108, 470 + Math.sin(t * 2.4 + i * 0.8) * 12, 34, i % 2 ? '#FFC23D' : PINK);
-      }
+      ctx.fillText('GEWONNEN HAT', W / 2, 140);
+      const name = view.contestants[0]?.name.toUpperCase() ?? '';
+      glowText(ctx, name, W / 2, 310, `800 ${name.length > 7 ? 130 : 170}px ${DISPLAY}`, '#FFFFFF', 'rgba(255,200,80,0.95)', 56);
+      for (let i = 0; i < 9; i += 1) heart(ctx, 80 + i * 108, 380, 34, i % 2 ? '#FFC23D' : PINK);
       break;
     }
     case 'empty': {
-      ledTopBar(ctx, W, 'FINALE', t);
+      ledTopBar(ctx, W, 'FINALE');
       ctx.textAlign = 'center';
-      glowText(ctx, 'DIE BÜHNE', W / 2, 250, `800 100px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.4)', 24);
-      glowText(ctx, 'IST LEER', W / 2, 360, `800 100px ${DISPLAY}`, PINK, rgba(PINK, 0.9), 36);
+      glowText(ctx, 'DIE BÜHNE', W / 2, 240, `800 100px ${DISPLAY}`, '#FFFFFF', 'rgba(255,255,255,0.4)', 24);
+      glowText(ctx, 'IST LEER', W / 2, 350, `800 100px ${DISPLAY}`, PINK, rgba(PINK, 0.9), 36);
       break;
     }
   }
@@ -689,39 +730,48 @@ export function drawLed(ctx: CanvasRenderingContext2D, W: number, H: number, vie
   ctx.restore();
 }
 
-// --- the host's desk monitor -------------------------------------------------
+// --- the host's screens --------------------------------------------------------
 
-export type DeskView = { title: string; line: string; round: number; seconds: number | null; urgent: boolean };
+export type HostScreenView = { kicker: string; line: string; seconds: number | null; urgent: boolean };
 
-export function drawDesk(ctx: CanvasRenderingContext2D, W: number, H: number, view: DeskView) {
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#22081A');
-  bg.addColorStop(1, '#0C0309');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  roundRect(ctx, 28, 26, 120, 44, 22);
+export function hostScreenKey(view: HostScreenView) {
+  return `${view.kicker}|${view.line}|${view.seconds}|${view.urgent}`;
+}
+
+/**
+ * The bar laid over the host's picture on both desk monitors: the round and
+ * what is happening, and the clock while somebody answers. Transparent
+ * everywhere else, so the picture shows through.
+ */
+export function drawHostOverlay(ctx: CanvasRenderingContext2D, W: number, H: number, view: HostScreenView) {
+  ctx.clearRect(0, 0, W, H);
+  const bar = ctx.createLinearGradient(0, H * 0.62, 0, H);
+  bar.addColorStop(0, 'rgba(20,4,12,0)');
+  bar.addColorStop(0.45, 'rgba(20,4,12,0.78)');
+  bar.addColorStop(1, 'rgba(20,4,12,0.92)');
+  ctx.fillStyle = bar;
+  ctx.fillRect(0, H * 0.62, W, H * 0.38);
+  roundRect(ctx, 22, 20, 128, 42, 21);
   ctx.fillStyle = PINK;
   ctx.fill();
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = `800 24px ${DISPLAY}`;
+  ctx.font = `800 22px ${DISPLAY}`;
   ctx.textBaseline = 'middle';
-  ctx.fillText('HOST', 52, 49);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = `700 24px ${DISPLAY}`;
-  ctx.fillText(`RUNDE ${view.round}/5`, W - 30, 49);
-  ctx.textAlign = 'left';
+  ctx.fillText('● HOST', 40, 42);
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = `800 30px ${DISPLAY}`;
+  const lines = wrap(ctx, view.line, view.seconds !== null ? W - 170 : W - 48).slice(0, 2);
+  ctx.font = `800 22px ${DISPLAY}`;
+  ctx.fillStyle = PINK_SOFT;
+  ctx.fillText(view.kicker.toUpperCase(), 24, H - 30 - lines.length * 36);
+  ctx.font = `800 30px ${DISPLAY}`;
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = `800 44px ${DISPLAY}`;
-  ctx.fillText(view.title, 30, 136);
-  ctx.fillStyle = 'rgba(255,255,255,0.65)';
-  ctx.font = `600 26px ${BODY}`;
-  ctx.fillText(view.line, 30, 186);
+  lines.forEach((line, index) => ctx.fillText(line, 24, H - 26 - (lines.length - 1 - index) * 36));
   if (view.seconds !== null) {
     ctx.textAlign = 'right';
-    ctx.fillStyle = view.urgent ? '#FF3B4E' : PINK;
-    ctx.font = `800 96px ${DISPLAY}`;
-    ctx.fillText(`0:${String(view.seconds).padStart(2, '0')}`, W - 30, 262);
+    ctx.font = `800 54px ${DISPLAY}`;
+    ctx.fillStyle = view.urgent ? '#FF3B4E' : '#FFFFFF';
+    ctx.fillText(`0:${String(view.seconds).padStart(2, '0')}`, W - 22, H - 26);
     ctx.textAlign = 'left';
   }
 }

@@ -58,23 +58,30 @@ export function Crowd({ count }: { count: number }) {
   const phoneMaterial = useMemo(() => new THREE.MeshBasicMaterial({ color: new THREE.Color('#FFFFFF').multiplyScalar(2.2), toneMapped: false, side: THREE.DoubleSide }), []);
   const phones = useMemo(() => people.filter((one) => one.phone), [people]);
 
+  const calm = useRef(0);
   useFrame(() => {
     const c = frame.current.cues;
     if (!c || !mesh.current) return;
     const now = frame.current.now * 0.001;
     const cheer = c.applause;
+    // A quiet audience sits still: nothing to move, nothing to send to the card.
+    calm.current = cheer < 0.01 ? calm.current + 1 : 0;
+    if (calm.current > 3) {
+      if (lights.current) phoneMaterial.color.setScalar(0.3 + (1 - c.house) * 1.6);
+      return;
+    }
     people.forEach((one, index) => {
-      const bob = cheer * Math.abs(Math.sin(now * 9 + one.phase)) * 0.07 + Math.sin(now * 0.8 + one.phase) * 0.01;
+      const bob = cheer * Math.abs(Math.sin(now * 9 + one.phase)) * 0.07;
       // Everybody faces the stage.
       dummy.position.set(one.x, one.y + bob, one.z);
-      dummy.rotation.set(0, Math.atan2(-one.x, -3.6 - one.z), Math.sin(now * 1.3 + one.phase) * 0.03 * (1 + cheer * 3));
+      dummy.rotation.set(0, Math.atan2(-one.x, -3.6 - one.z), Math.sin(now * 1.3 + one.phase) * 0.09 * cheer);
       dummy.updateMatrix();
       mesh.current!.setMatrixAt(index, dummy.matrix);
     });
     mesh.current.instanceMatrix.needsUpdate = true;
     if (lights.current) {
       phones.forEach((one, index) => {
-        const sway = Math.sin(now * 1.6 + one.phase) * 0.18;
+        const sway = Math.sin(now * 1.6 + one.phase) * 0.18 * cheer;
         dummy.position.set(one.x + sway * 0.3, one.y + 1.25 + cheer * 0.05, one.z);
         dummy.rotation.set(0, Math.atan2(-one.x, -3.6 - one.z), 0);
         dummy.updateMatrix();

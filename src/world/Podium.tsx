@@ -6,7 +6,7 @@ import type { Contestant } from '../show/types';
 import { drawAvatar, drawLiveTag, drawNamePlate } from './canvasArt';
 import { useFrameData } from './frame';
 import { PODIUM } from './layout';
-import { canvasTexture, getHeartGeometry, makeScreenMaterial, neon, setNeon } from './materials';
+import { canvasTexture, coverScreen, getHeartGeometry, makeScreenMaterial, neon, setNeon } from './materials';
 
 /**
  * One contestant's place on the stage: a white podium with their name on the
@@ -58,7 +58,7 @@ export function Podium({
   const avatar = useMemo(() => canvasTexture(drawAvatar(contestant.look)), [contestant]);
   const plate = useMemo(() => canvasTexture(drawNamePlate(contestant)), [contestant]);
   const live = useMemo(() => canvasTexture(drawLiveTag()), []);
-  const screen = useMemo(() => makeScreenMaterial(picture ?? avatar), [avatar, picture]);
+  const screen = useMemo(() => makeScreenMaterial(avatar), [avatar]);
   const band = useMemo(() => neon(contestant.color, 2.4), [contestant.color]);
   const ring = useMemo(() => neon(contestant.color, 2), [contestant.color]);
   const trapGlow = useMemo(() => neon('#FF2D7A', 3), []);
@@ -127,7 +127,8 @@ export function Podium({
     spoken.current += (speaking - spoken.current) * (1 - Math.exp(-6 * dt));
     setNeon(halo, spoken.current * (0.75 + 0.25 * Math.sin(now * 0.006)), 0);
 
-    // The monitor: alive, then noise, then off.
+    // The monitor: their camera once it is there, the stand-in until then.
+    coverScreen(screen, picture ?? avatar, PODIUM.monitorWidth / PODIUM.monitorHeight);
     const u = screen.uniforms;
     u.uTime.value = now / 1000 + seed;
     u.uBreath.value = picture ? 0 : 1;
@@ -141,9 +142,12 @@ export function Podium({
     setNeon(band, popping && popT >= POWER_OFF ? 0.02 : (0.35 + 0.65 * lit) * (0.5 + 0.5 * c.stageEdge) + alarm);
     setNeon(ring, (0.3 + 0.7 * lit) * c.stageEdge * (popping && popT >= POWER_OFF ? 0 : 1));
 
-    // The trapdoor's glow while the podium goes down.
+    // The trapdoor's glow while the podium goes down. Never hidden, only
+    // shrunk away: an object shown for the first time mid-show would make the
+    // phone stop to prepare it, right at the big moment.
     if (trap.current) {
-      trap.current.visible = popping && popT > SINK_FROM - 0.04;
+      const open = popping && popT > SINK_FROM - 0.04 ? 1 : 0.0001;
+      trap.current.scale.setScalar(open);
       setNeon(trapGlow, popping ? 1 - sink * 0.6 : 0);
     }
 
@@ -230,7 +234,7 @@ export function Podium({
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]} material={ring}>
         <ringGeometry args={[0.72, 0.76, 64]} />
       </mesh>
-      <mesh ref={trap} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.008, 0]} material={trapGlow} visible={false}>
+      <mesh ref={trap} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.008, 0]} material={trapGlow} scale={0.0001}>
         <ringGeometry args={[0.6, 0.66, 64]} />
       </mesh>
 

@@ -1,15 +1,16 @@
 import * as THREE from 'three';
-import { DUR, INTRO, ROUND_MS, TOTAL_ROUNDS } from '../show/config';
-import { elapsedOf, presentIndex, presentProgress, spotlightOn, VERDICT_LAND_MS } from '../show/timeline';
+import { DUR, INTRO, roundsFor, TURN_MS } from '../show/config';
+import { currentTurn, elapsedOf, presentSlot, spotlightOn, VERDICT_LAND_MS } from '../show/timeline';
 import type { Contestant, ShowState } from '../show/types';
-import type { DeskView, LedView } from './canvasArt';
+import type { HostScreenView, LedView } from './canvasArt';
 import {
   answerShot,
   contestantShot,
   fovToFit,
   hostShot,
-  presentShot,
   PODIUM,
+  presentShot,
+  reverseShot,
   seatMap,
   type Seat,
   type Shot,
@@ -32,8 +33,8 @@ export type SpotCue = { aim: THREE.Vector3; level: number; color: THREE.Color; s
 
 export type Cues = {
   shot: Shot;
-  /** How quickly the camera follows its shot; higher is tighter. */
-  follow: number;
+  /** Roughly how many seconds the camera takes to arrive at its shot; 0 cuts. */
+  ease: number;
   /** Small handheld drift, as on a real studio camera. */
   handheld: number;
   /** Overall studio light, 0 dark … 1 full. */
@@ -43,7 +44,7 @@ export type Cues = {
   stageEdge: number;
   ledPower: number;
   led: LedView;
-  desk: DeskView;
+  host: HostScreenView;
   corridorLights: number;
   doorOpen: number;
   /** Per seat index, during the intro: the podium coming up, the balloon filling. */
@@ -55,10 +56,12 @@ export type Cues = {
   othersDim: number;
   /** The real spotlight jumps instead of travelling (the verdict's hunt). */
   focusSnap: boolean;
+  /** The host's desk in the light: presenting the host, asking the question. */
+  hostLit: number;
   applause: number;
   /** A white flash through the room, 0 … 1. */
   flash: number;
-  /** The last seconds of a round: the room pulses with the clock. */
+  /** The last seconds of a turn: the room pulses with the clock. */
   clockPulse: number;
   /** Balloons bouncing for joy. */
   bounce: number;
@@ -102,6 +105,7 @@ export function headPosition(index: number) {
   );
 }
 const HEADS = Array.from({ length: TRUSS.heads }, (_, index) => headPosition(index));
+const HOST_AIM = new THREE.Vector3(0, 0.02, 6.4);
 
 /** The heads best placed to light somebody from the front. */
 function headsFor(s: Seat) {
@@ -110,6 +114,11 @@ function headsFor(s: Seat) {
     .sort((a, b) => a.d - b.d)
     .map((one) => one.index);
 }
+
+/** The heads nearest the host's desk. */
+const HOST_HEADS = HEADS.map((head, index) => ({ index, d: head.distanceToSquared(HOST_AIM) }))
+  .sort((a, b) => a.d - b.d)
+  .map((one) => one.index);
 
 function sweepAim(index: number, t: number, speed = 1, spread = 1) {
   const a = t * 0.0009 * speed + index * 0.78;
@@ -134,15 +143,12 @@ function pathAt(keys: { at: number; p: THREE.Vector3 }[], t: number) {
       const p0 = keys[Math.max(0, i - 1)].p;
       const p3 = keys[Math.min(keys.length - 1, i + 2)].p;
       const u = (t - a.at) / (b.at - a.at);
-      const e = u * u * (3 - 2 * u);
-      const k = e;
+      const k = u * u * (3 - 2 * u);
       const k2 = k * k;
       const k3 = k2 * k;
-      return new THREE.Vector3(
-        0.5 * (2 * a.p.x + (-p0.x + b.p.x) * k + (2 * p0.x - 5 * a.p.x + 4 * b.p.x - p3.x) * k2 + (-p0.x + 3 * a.p.x - 3 * b.p.x + p3.x) * k3),
-        0.5 * (2 * a.p.y + (-p0.y + b.p.y) * k + (2 * p0.y - 5 * a.p.y + 4 * b.p.y - p3.y) * k2 + (-p0.y + 3 * a.p.y - 3 * b.p.y + p3.y) * k3),
-        0.5 * (2 * a.p.z + (-p0.z + b.p.z) * k + (2 * p0.z - 5 * a.p.z + 4 * b.p.z - p3.z) * k2 + (-p0.z + 3 * a.p.z - 3 * b.p.z + p3.z) * k3),
-      );
+      const axis = (q0: number, q1: number, q2: number, q3: number) =>
+        0.5 * (2 * q1 + (-q0 + q2) * k + (2 * q0 - 5 * q1 + 4 * q2 - q3) * k2 + (-q0 + 3 * q1 - 3 * q2 + q3) * k3);
+      return new THREE.Vector3(axis(p0.x, a.p.x, b.p.x, p3.x), axis(p0.y, a.p.y, b.p.y, p3.y), axis(p0.z, a.p.z, b.p.z, p3.z));
     }
   }
   return keys[keys.length - 1].p.clone();
@@ -193,12 +199,13 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
   const t = elapsedOf(state, now);
   const seats = seatMap(state.standing);
   const seatList = state.standing.map((id) => seats.get(id)!);
-  const roundLabel = Math.min(state.round, TOTAL_ROUNDS);
+  const total = roundsFor(state.contestants.length);
+  const round = Math.min(state.round, total);
 
   const spots: SpotCue[] = HEADS.map((_, index) => ({ aim: sweepAim(index, now), level: 0.55, color: WHITE.clone(), snap: false }));
   const cues: Cues = {
     shot: hostShot(aspect),
-    follow: 2.4,
+    ease: 1.2,
     handheld: 1,
     house: 1,
     cove: 1,
@@ -206,15 +213,17 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     stageEdge: 1,
     ledPower: 1,
     led: { kind: 'logo' },
-    desk: { title: 'Bereit', line: 'Die Show läuft', round: roundLabel, seconds: null, urgent: false },
+    host: { kicker: `Runde ${round} von ${total}`, line: 'Die Show läuft', seconds: null, urgent: false },
     corridorLights: 99,
-    doorOpen: 1,
+    // Closed again once everybody is in: behind the host is the entrance, not a hole.
+    doorOpen: 0,
     rise: () => 1,
     inflate: () => 1,
     spots,
     focusId: null,
     othersDim: 1,
     focusSnap: false,
+    hostLit: 0,
     applause: 0,
     flash: 0,
     clockPulse: 0,
@@ -239,12 +248,22 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     spots[second] = { aim: aimAt(s), level: level * 0.7, color: color.clone(), snap: false };
   };
 
+  /** Two heads on the host's desk. */
+  const lightHost = (level = 1) => {
+    spots.forEach((spot, index) => {
+      spot.level = 0.15;
+      spot.aim = sweepAim(index, now, 0.4, 0.8);
+    });
+    spots[HOST_HEADS[0]] = { aim: HOST_AIM.clone(), level, color: WHITE.clone(), snap: false };
+    spots[HOST_HEADS[1]] = { aim: HOST_AIM.clone(), level: level * 0.7, color: PINK.clone(), snap: false };
+  };
+
   switch (state.phase) {
     case 'title': {
       const a = now * 0.00006;
       const position = new THREE.Vector3(Math.sin(a) * 11.5, 6.2, STAGE_CENTER.z + Math.cos(a) * 12.5 + 1);
       cues.shot = { position, target: new THREE.Vector3(0, 2.1, -3.6), fov: 52 };
-      cues.follow = 99;
+      cues.ease = 0;
       cues.handheld = 0;
       cues.house = 0.8;
       spots.forEach((spot, index) => {
@@ -257,7 +276,7 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
 
     case 'intro': {
       cues.shot = introShot(t, aspect);
-      cues.follow = 99;
+      cues.ease = 0;
       cues.handheld = t > INTRO.insideAt ? 0.6 : 0;
       cues.corridorLights = Math.max(0, (t - INTRO.corridorLightsFrom) / INTRO.corridorLightStep);
       cues.doorOpen = smooth(INTRO.doorsOpen, INTRO.doorsOpen + INTRO.doorsOpenDur, t);
@@ -281,40 +300,49 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
         spot.color = index % 3 === 0 ? PINK.clone() : WHITE.clone();
       });
       cues.applause = smooth(INTRO.ledLogo - 400, INTRO.ledLogo + 600, t) * (1 - smooth(14_000, 15_800, t));
-      cues.desk = { title: 'Gleich live', line: 'Die Show beginnt', round: 1, seconds: null, urgent: false };
+      cues.host = { kicker: 'Gleich live', line: 'Die Show beginnt', seconds: null, urgent: false };
       break;
     }
 
     case 'presentation': {
-      const index = presentIndex(state, now);
-      const progress = presentProgress(state, now);
-      if (index >= 0) {
-        const c = state.contestants[index];
+      const slot = presentSlot(state, now);
+      if (slot.kind === 'host') {
+        // The host first: the camera comes in towards the desk from the stage.
+        cues.shot = reverseShot(aspect, easeOut(slot.progress) * 0.85);
+        cues.ease = slot.progress < 0.05 ? 0.9 : 1.4;
+        lightHost(1);
+        cues.hostLit = 1;
+        cues.othersDim = 0.5;
+        cues.house = 0.7;
+        cues.led = { kind: 'host', name: state.host.name };
+        cues.applause = slot.progress < 0.3 ? 0.6 * (1 - slot.progress / 0.3) : 0;
+        cues.host = { kicker: 'Dein Host', line: state.host.name, seconds: null, urgent: false };
+      } else if (slot.kind === 'contestant') {
+        const c = state.contestants[slot.index];
         const s = seats.get(c.id);
         // First the profile on the wall above them, then in to their face.
-        if (s) cues.shot = presentShot(s, aspect, smooth(0.58, 0.95, progress));
-        cues.follow = progress < 0.06 ? 3.2 : 2.2;
+        if (s) cues.shot = presentShot(s, aspect, smooth(0.58, 0.95, slot.progress));
+        cues.ease = slot.progress < 0.06 ? 0.9 : 1.1;
         light(c.id, 1, WHITE, 0.12);
         cues.focusId = c.id;
         cues.othersDim = 0.45;
         cues.house = 0.72;
-        cues.led = { kind: 'profile', contestant: c, index, total: state.contestants.length, progress, anchor: s ? s.position.x * 0.7 : 0 };
-        cues.applause = progress < 0.18 ? 0.45 * (1 - progress / 0.18) : 0;
-        cues.desk = { title: c.name, line: `Kandidat ${index + 1} stellt sich vor`, round: 1, seconds: null, urgent: false };
+        cues.led = { kind: 'profile', contestant: c, index: slot.index, total: state.contestants.length, progress: slot.progress, anchor: s ? s.position.x * 0.7 : 0 };
+        cues.applause = slot.progress < 0.18 ? 0.45 * (1 - slot.progress / 0.18) : 0;
+        cues.host = { kicker: `Kandidat ${slot.index + 1}`, line: c.name, seconds: null, urgent: false };
       } else {
-        const outro = t - (state.contestants.length * DUR.presentEach);
         const wide = wideShot(aspect);
-        cues.shot = { ...wide, position: wide.position.clone().add(new THREE.Vector3(0, 0, -outro * 0.0004)) };
-        cues.follow = 1.6;
+        cues.shot = { ...wide, position: wide.position.clone().add(new THREE.Vector3(0, 0, -slot.progress * 1.2)) };
+        cues.ease = 1.4;
         cues.led = { kind: 'lineup', contestants: state.contestants };
-        cues.applause = 1 - smooth(1_800, DUR.presentOutro, outro);
+        cues.applause = 1 - smooth(0.55, 1, slot.progress);
         spots.forEach((spot, i) => {
           const s = seatList[i % Math.max(1, seatList.length)];
           if (s) spot.aim = aimAt(s);
           spot.level = 0.8;
           spot.color = i % 2 ? PINK.clone() : WHITE.clone();
         });
-        cues.desk = { title: 'Alle da', line: 'Gleich geht es los', round: 1, seconds: null, urgent: false };
+        cues.host = { kicker: 'Alle da', line: 'Gleich geht es los', seconds: null, urgent: false };
       }
       break;
     }
@@ -322,22 +350,22 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     case 'roundStart': {
       const wide = wideShot(aspect);
       cues.shot = { ...wide, position: wide.position.clone().add(new THREE.Vector3(0, 0.6 - t * 0.0002, 1.2 - t * 0.0006)) };
-      cues.follow = t < 200 ? 2.6 : 1.4;
-      cues.led = { kind: 'round', round: state.round, total: TOTAL_ROUNDS };
+      cues.ease = 1.3;
+      cues.led = { kind: 'round', round, total };
       cues.flash = Math.max(0, 1 - t / 500) * 0.6;
       spots.forEach((spot, index) => {
         spot.aim = sweepAim(index, now, 3.2, 1.2);
         spot.level = 0.9;
         spot.color = index % 2 ? PINK.clone() : WHITE.clone();
       });
-      cues.desk = { title: `Runde ${state.round}`, line: `von ${TOTAL_ROUNDS}`, round: state.round, seconds: null, urgent: false };
+      cues.host = { kicker: `Runde ${round} von ${total}`, line: 'Gleich kommt die Frage', seconds: null, urgent: false };
       break;
     }
 
     case 'choosing': {
       cues.shot = hostShot(aspect);
-      cues.follow = 1.8;
-      cues.led = { kind: 'choose', round: state.round };
+      cues.ease = 1.3;
+      cues.led = { kind: 'choose', round, total };
       spots.forEach((spot, index) => {
         const s = seatList[index];
         if (s) {
@@ -345,35 +373,67 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
           spot.level = 0.42;
         } else spot.level = 0.12;
       });
-      cues.desk = { title: 'Deine Frage?', line: 'Zufall oder selbst fragen', round: state.round, seconds: null, urgent: false };
+      cues.host = { kicker: `Runde ${round} von ${total}`, line: 'Wähle deine Frage', seconds: null, urgent: false };
+      break;
+    }
+
+    case 'asking': {
+      // The contestants' view: the host puts the question to them.
+      cues.shot = reverseShot(aspect, smooth(0, DUR.asking, t) * 0.12);
+      cues.ease = t < 150 ? 0 : 1.6;
+      lightHost(1);
+      cues.hostLit = 1;
+      cues.house = 0.75;
+      const text = state.question?.kind === 'random' ? state.question.text.replace(/\s*\n\s*/g, ' ') : 'Ich stelle meine eigene Frage';
+      cues.led = { kind: 'question', round, total, text: state.question?.kind === 'random' ? state.question.text : null, turn: null };
+      cues.host = { kicker: 'Die Frage', line: text, seconds: null, urgent: false };
       break;
     }
 
     case 'answering': {
-      const focus = spotlightOn(state, now);
-      const s = focus ? seats.get(focus) : null;
+      const turn = currentTurn(state, now);
+      const s = turn ? seats.get(turn.id) : null;
+      const c = byId(state, turn?.id ?? null);
       if (s) cues.shot = answerShot(s, aspect);
-      cues.follow = 1.5;
-      light(focus, 1, WHITE, 0.22);
-      cues.focusId = focus;
-      cues.othersDim = 0.42;
+      cues.ease = 1.1;
+      light(turn?.id ?? null, 1, WHITE, 0.2);
+      cues.focusId = turn?.id ?? null;
+      cues.othersDim = 0.4;
       cues.house = 0.78;
-      const left = Math.max(0, ROUND_MS - t);
-      const seconds = Math.ceil(left / 1000);
+      const seconds = turn ? Math.ceil(turn.left / 1000) : 0;
+      if (turn && turn.left <= 3_000) cues.clockPulse = Math.pow((turn.left % 1000) / 1000, 6);
       cues.led = {
         kind: 'question',
-        round: state.round,
+        round,
+        total,
         text: state.question?.kind === 'random' ? state.question.text : null,
-        seconds,
-        fraction: left / ROUND_MS,
+        turn: turn && c ? { name: c.name, color: c.color, seconds, fraction: turn.left / TURN_MS, index: turn.index, count: turn.count } : null,
       };
-      if (left <= 5_000) {
-        // The last five seconds: the room pulses on every second.
-        const beat = (left % 1000) / 1000;
-        cues.clockPulse = Math.pow(beat, 6);
+      cues.host = { kicker: c ? `${c.name} antwortet` : 'Antworten', line: turn ? `Kandidat ${turn.index + 1} von ${turn.count}` : '', seconds, urgent: seconds <= 3 };
+      break;
+    }
+
+    case 'deciding': {
+      // Over the host's shoulder: the whole row, the host's own picture below.
+      cues.shot = hostShot(aspect);
+      cues.ease = 1.3;
+      const picked = state.selected ? seats.get(state.selected) : null;
+      spots.forEach((spot, index) => {
+        const s = seatList[index];
+        spot.aim = s ? aimAt(s) : sweepAim(index, now);
+        spot.level = s ? 0.35 : 0.08;
+      });
+      if (picked) {
+        const [first, second] = headsFor(picked);
+        spots[first] = { aim: aimAt(picked), level: 1, color: RED.clone().lerp(WHITE, 0.5), snap: false };
+        spots[second] = { aim: aimAt(picked), level: 0.7, color: WHITE.clone(), snap: false };
       }
-      const name = byId(state, focus)?.name ?? '';
-      cues.desk = { title: name ? `${name} antwortet` : 'Antworten', line: 'Tippe POP oder warte', round: state.round, seconds, urgent: left <= 5_000 };
+      cues.focusId = state.selected;
+      cues.othersDim = state.selected ? 0.55 : 1;
+      cues.house = 0.6;
+      cues.led = { kind: 'decide', round, total };
+      const name = byId(state, state.selected)?.name;
+      cues.host = { kicker: 'Deine Entscheidung', line: name ? `${name} poppen?` : 'Wer muss gehen?', seconds: null, urgent: false };
       break;
     }
 
@@ -384,10 +444,10 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       const wide = wideShot(aspect);
       if (landed && target) {
         cues.shot = contestantShot(target, aspect, smooth(VERDICT_LAND_MS, DUR.verdict, t) * 0.2, 0);
-        cues.follow = 2.2;
+        cues.ease = 0.8;
       } else {
         cues.shot = { ...wide, position: wide.position.clone().add(new THREE.Vector3(0, -0.4, -t * 0.0004)) };
-        cues.follow = 2.0;
+        cues.ease = 1.0;
       }
       cues.house = 1 - 0.95 * smooth(0, 400, t);
       cues.cove = 0.18;
@@ -405,8 +465,8 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       }
       cues.focusId = current;
       cues.othersDim = 0.22;
-      cues.led = { kind: 'verdict', round: state.round };
-      cues.desk = { title: 'Wer muss gehen?', line: 'Spannung …', round: state.round, seconds: null, urgent: true };
+      cues.led = { kind: 'verdict', round, total };
+      cues.host = { kicker: 'POP', line: 'Wer muss gehen?', seconds: null, urgent: true };
       break;
     }
 
@@ -420,7 +480,7 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
         shot.target.y -= smooth(1_200, 2_500, t) * 0.5;
         cues.shot = shot;
       }
-      cues.follow = 2.4;
+      cues.ease = 0.7;
       cues.popId = state.target;
       cues.popT = t / DUR.pop;
       cues.house = 0.4 + 0.4 * smooth(700, 1_400, t);
@@ -429,14 +489,14 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       cues.othersDim = 0.4;
       light(state.target, 1, t < 700 ? WHITE : RED, 0.1);
       cues.flash = t > 700 ? Math.max(0, 1 - (t - 700) / 450) : 0;
-      cues.led = t < 700 || !c ? { kind: 'verdict', round: state.round } : { kind: 'out', contestant: c };
-      cues.desk = { title: c ? `${c.name} geht` : 'POP', line: 'Ballon geplatzt', round: state.round, seconds: null, urgent: false };
+      cues.led = t < 700 || !c ? { kind: 'verdict', round, total } : { kind: 'out', contestant: c };
+      cues.host = { kicker: 'POP', line: c ? `${c.name} geht` : '', seconds: null, urgent: false };
       break;
     }
 
     case 'regroup': {
       cues.shot = wideShot(aspect);
-      cues.follow = 1.6;
+      cues.ease = 1.2;
       spots.forEach((spot, index) => {
         const s = seatList[index];
         spot.aim = s ? aimAt(s) : sweepAim(index, now);
@@ -445,23 +505,7 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       const gone = state.out[state.out.length - 1];
       const c = byId(state, gone?.id ?? null);
       cues.led = c && t < 900 ? { kind: 'out', contestant: c } : { kind: 'logo' };
-      cues.desk = { title: `${state.standing.length} übrig`, line: 'Die anderen rücken auf', round: state.round, seconds: null, urgent: false };
-      break;
-    }
-
-    case 'allStay': {
-      cues.shot = wideShot(aspect);
-      cues.follow = 1.8;
-      cues.led = { kind: 'allStay' };
-      cues.bounce = 1 - smooth(DUR.allStay - 600, DUR.allStay, t);
-      cues.applause = 1 - smooth(1_800, DUR.allStay, t);
-      cues.flash = Math.max(0, 1 - t / 400) * 0.4;
-      spots.forEach((spot, index) => {
-        spot.aim = sweepAim(index, now, 2.6, 1);
-        spot.level = 0.9;
-        spot.color = index % 2 ? PINK.clone() : WHITE.clone();
-      });
-      cues.desk = { title: 'Alle bleiben', line: 'Die Zeit ist um', round: state.round, seconds: 0, urgent: false };
+      cues.host = { kicker: `${state.standing.length} übrig`, line: 'Die anderen rücken auf', seconds: null, urgent: false };
       break;
     }
 
@@ -469,10 +513,10 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     case 'end': {
       const winnersSeats = seatList;
       const empty = winnersSeats.length === 0;
-      const total = state.phase === 'end' ? t + DUR.finale : t;
+      const since = state.phase === 'end' ? t + DUR.finale : t;
       if (empty) {
         const wide = wideShot(aspect);
-        cues.shot = { ...wide, position: wide.position.clone().add(new THREE.Vector3(0, total * 0.00012, total * 0.00025)) };
+        cues.shot = { ...wide, position: wide.position.clone().add(new THREE.Vector3(0, since * 0.00012, since * 0.00025)) };
         cues.house = 0.35;
         cues.cove = 0.4;
         spots.forEach((spot) => (spot.level = 0.08));
@@ -482,16 +526,16 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
         const radius = winnersSeats.length === 1 ? 5.4 : 7.8;
         // A sweep in from the side, then round to the front, where the wall
         // with the winner's name is in the picture; it never goes behind the stage.
-        const sweep = smooth(0, 5_200, total);
-        const a = THREE.MathUtils.lerp(-1.15, 0, sweep) + Math.sin(total * 0.00035) * 0.12 * sweep;
+        const sweep = smooth(0, 5_200, since);
+        const a = THREE.MathUtils.lerp(-1.15, 0, sweep) + Math.sin(since * 0.00035) * 0.12 * sweep;
         const lift = THREE.MathUtils.lerp(2.6, 3.4, sweep);
         const position = new THREE.Vector3(center.x * (1 - 0.4 * sweep) + Math.sin(a) * radius, lift, center.z + Math.cos(a) * radius);
         const target = center.clone().add(new THREE.Vector3(-center.x * 0.3 * sweep, PODIUM.monitorY + 0.35 + sweep * 0.9, 0));
         cues.shot = { position, target, fov: fovToFit(winnersSeats.length === 1 ? 46 : 54, 2.4, position.distanceTo(target), aspect) };
-        cues.follow = total < 400 ? 2 : 3;
-        cues.gold = smooth(0, 800, total);
-        cues.confettiRain = 1 - smooth(6_500, 9_000, total);
-        cues.applause = 1 - smooth(5_000, 8_000, total);
+        cues.ease = since < 400 ? 1.2 : 0.5;
+        cues.gold = smooth(0, 800, since);
+        cues.confettiRain = 1 - smooth(6_500, 9_000, since);
+        cues.applause = 1 - smooth(5_000, 8_000, since);
         cues.bounce = 0.6;
         spots.forEach((spot, index) => {
           const s = winnersSeats[index % winnersSeats.length];
@@ -499,9 +543,10 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
           spot.level = 0.95;
           spot.color = index % 2 ? GOLD.clone() : WHITE.clone();
         });
-        cues.led = { kind: 'winner', contestants: state.standing.map((id) => byId(state, id)!).filter(Boolean) as Contestant[] };
+        cues.led = { kind: 'winner', contestants: state.standing.map((id) => byId(state, id)).filter(Boolean) as Contestant[] };
       }
-      cues.desk = { title: 'Finale', line: empty ? 'Niemand ist geblieben' : 'Applaus!', round: TOTAL_ROUNDS, seconds: null, urgent: false };
+      const winner = byId(state, state.standing[0] ?? null);
+      cues.host = { kicker: 'Finale', line: winner ? `${winner.name} gewinnt` : 'Niemand ist geblieben', seconds: null, urgent: false };
       break;
     }
   }

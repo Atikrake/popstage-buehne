@@ -1,25 +1,29 @@
-/** Five rounds, as in the app. One POP per round at most. */
-export const TOTAL_ROUNDS = 5;
+/**
+ * Somebody goes in every round, until one is left: a show has one round
+ * fewer than it has contestants — four rounds for five.
+ */
+export function roundsFor(contestants: number) {
+  return Math.max(1, contestants - 1);
+}
 
-/** Talking time once the question is settled — the app's ROUND_SECONDS. */
-export const ROUND_MS = 20_000;
+/** Each contestant's turn to answer; then the next one, automatically. */
+export const TURN_MS = 10_000;
 
 /** How long each part of the show lasts, in milliseconds. */
 export const DUR = {
   intro: 16_000,
+  /** The host is introduced first. */
+  presentHost: 4_600,
   presentEach: 5_400,
   presentOutro: 3_400,
   roundStart: 2_800,
   /** Nobody chose: a question is drawn, as in the app. */
   chooseAuto: 10_000,
-  /** How long the spotlight stays on one person while they answer. */
-  autoFocus: 4_200,
-  /** A tap holds the focus on somebody for this long. */
-  manualFocusHold: 9_000,
+  /** The host asks, seen from the contestants' side. */
+  asking: 3_400,
   verdict: 3_900,
   pop: 2_700,
   regroup: 1_600,
-  allStay: 3_000,
   finale: 9_500,
 } as const;
 

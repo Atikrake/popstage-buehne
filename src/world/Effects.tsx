@@ -135,13 +135,22 @@ export function Effects({ confettiCount, dustCount }: { confettiCount: number; d
 
     const step = (list: Particle[], mesh: THREE.InstancedMesh | null, drag: number, gravity: number, flutterAmount: number, scale: number) => {
       if (!mesh) return;
+      let touched = false;
       list.forEach((one, index) => {
+        // Particles at rest cost nothing: only the living (and the one that
+        // has just died, to tuck it away) are written.
+        if (!one.alive && one.age < 0) return;
+        touched = true;
         if (!one.alive) {
+          one.age = -1;
           dummy.position.set(0, -50, 0);
           dummy.scale.setScalar(0.0001);
         } else {
           one.age += dt;
-          if (one.age > one.life) one.alive = false;
+          if (one.age > one.life) {
+            one.alive = false;
+            one.age = one.life;
+          }
           one.v.y -= gravity * dt;
           one.v.multiplyScalar(1 - drag * dt);
           // Paper drifts side to side as it falls.
@@ -164,7 +173,7 @@ export function Effects({ confettiCount, dustCount }: { confettiCount: number; d
         dummy.updateMatrix();
         mesh.setMatrixAt(index, dummy.matrix);
       });
-      mesh.instanceMatrix.needsUpdate = true;
+      if (touched) mesh.instanceMatrix.needsUpdate = true;
     };
     step(confetti, confettiMesh.current, 1.6, 2.2, 0.5, 1);
     step(shards, shardMesh.current, 0.8, 7, 0, 1);
@@ -173,8 +182,8 @@ export function Effects({ confettiCount, dustCount }: { confettiCount: number; d
     f.age += dt;
     if (flash.current) {
       const k = Math.max(0, 1 - f.age / 0.45);
-      flash.current.visible = k > 0;
-      flash.current.scale.setScalar(0.6 + (1 - k) * 3.4);
+      // Shrunk rather than hidden, so it is ready the moment it is needed.
+      flash.current.scale.setScalar(k > 0 ? 0.6 + (1 - k) * 3.4 : 0.0001);
       flash.current.quaternion.copy(camera.quaternion);
       flashMaterial.color.copy(f.color).multiplyScalar(k * 3);
     }
@@ -187,7 +196,7 @@ export function Effects({ confettiCount, dustCount }: { confettiCount: number; d
         <meshStandardMaterial side={THREE.DoubleSide} roughness={0.5} emissive="#ffffff" emissiveIntensity={0.25} />
       </instancedMesh>
       <instancedMesh ref={shardMesh} args={[shardGeometry, shardMaterial, shards.length]} frustumCulled={false} />
-      <mesh ref={flash} material={flashMaterial} visible={false} renderOrder={10}>
+      <mesh ref={flash} material={flashMaterial} scale={0.0001} renderOrder={10}>
         <planeGeometry args={[1, 1]} />
       </mesh>
       {dustCount > 0 ? <Dust count={dustCount} /> : null}

@@ -1,6 +1,6 @@
 import { clock } from '../show/clock';
 import { useEffect, useRef } from 'react';
-import { DUR, INTRO, ROUND_MS } from '../show/config';
+import { DUR, INTRO, TURN_MS } from '../show/config';
 import { verdictHops, VERDICT_LAND_MS } from '../show/timeline';
 import type { ShowState } from '../show/types';
 import { sound } from './sound';
@@ -45,14 +45,16 @@ function cuesFor(state: ShowState): Cue[] {
       add(0, () => {
         sound.theme(0.75);
         sound.crowdLevel(0.7);
+        sound.whoosh(0.8, 0.9);
+        sound.applause(1.8, 0.6);
       });
       state.contestants.forEach((_, index) => {
-        add(index * DUR.presentEach + 10, () => {
+        add(DUR.presentHost + index * DUR.presentEach + 10, () => {
           sound.whoosh(0.6, 0.8);
           sound.applause(1.4, 0.45);
         });
       });
-      add(state.contestants.length * DUR.presentEach + 10, () => {
+      add(DUR.presentHost + state.contestants.length * DUR.presentEach + 10, () => {
         sound.sting();
         sound.applause(2.6, 1);
       });
@@ -66,14 +68,32 @@ function cuesFor(state: ShowState): Cue[] {
       });
       break;
     case 'choosing':
-      add(0, () => sound.theme(0.5));
+      add(0, () => sound.theme(0.4));
       break;
-    case 'answering':
+    case 'asking':
       add(0, () => {
-        sound.theme(0.32);
-        sound.crowdLevel(0.45);
+        sound.whoosh(0.7, 0.8);
+        sound.theme(0.15);
       });
-      for (let s = 10; s >= 1; s -= 1) add(ROUND_MS - s * 1000, () => sound.tick(s <= 5));
+      break;
+    case 'answering': {
+      // Quiet under the answers, so everybody can hear each other.
+      add(0, () => {
+        sound.theme(0.08);
+        sound.crowdLevel(0.25);
+      });
+      state.standing.forEach((_, index) => {
+        const start = index * TURN_MS;
+        if (index > 0) add(start, () => sound.whoosh(0.5, 0.6));
+        for (let s = 3; s >= 1; s -= 1) add(start + TURN_MS - s * 1000, () => sound.tick(true));
+      });
+      break;
+    }
+    case 'deciding':
+      add(0, () => {
+        sound.theme(0.25);
+        sound.sting();
+      });
       break;
     case 'verdict': {
       add(0, () => {
@@ -100,13 +120,6 @@ function cuesFor(state: ShowState): Cue[] {
     case 'regroup':
       add(0, () => sound.whoosh(0.9, 0.7));
       add(DUR.regroup - 200, () => sound.theme(0.7));
-      break;
-    case 'allStay':
-      add(0, () => {
-        sound.allStay();
-        sound.applause(2.6, 0.9);
-        sound.theme(0.7);
-      });
       break;
     case 'finale':
       add(0, () => {
