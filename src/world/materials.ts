@@ -333,12 +333,12 @@ export function makeBeamMaterial(color = '#FFE6F1') {
         // The lamp's own hot spot and a soft landing at the far end.
         float hot = 1.0 + 1.6 * pow(clamp(vAlong, 0.0, 1.0), 10.0);
         float land = smoothstep(0.0, 0.16, vAlong);
-        // Haze rolling slowly through the beam.
-        float haze = psNoise(vec2(vAround * 9.0 + uSeed, vAlong * 3.0 - uTime * 0.18));
-        haze = 0.62 + 0.76 * haze;
+        // Haze rolling slowly through the beam: two slow waves that never line up.
+        float a = vAround * 6.2831853;
+        float haze = 0.75 + 0.15 * sin(a * 3.0 + uSeed + sin(vAlong * 5.0 - uTime * 0.5) * 1.6) + 0.1 * sin(a * 5.0 - uTime * 0.3 + vAlong * 3.0);
         float near = smoothstep(0.6, 3.2, vDepth);
-        float a = uIntensity * along * rim * hot * land * haze * near * 0.24;
-        gl_FragColor = vec4(uColor * a, a);
+        float k = uIntensity * along * rim * hot * land * haze * near * 0.24;
+        gl_FragColor = vec4(uColor * k, k);
       }
     `,
   });

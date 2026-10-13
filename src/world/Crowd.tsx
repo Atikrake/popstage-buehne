@@ -24,7 +24,10 @@ const STAGE_Z = -3.6;
 const SHOULDER_Y = 0.56;
 const SHOULDER_X = 0.19;
 
-/** One seated person, built once. Arm vertices carry which side they belong to. */
+/**
+ * One seated person, built once. Arm vertices carry which side they belong
+ * to. Kept lean — there are a hundred and more of them, seen from afar.
+ */
 function personGeometry() {
   const torso = turned(
     profile([
@@ -36,12 +39,12 @@ function personGeometry() {
       [0.06, 0.64, 0.03],
       [0.05, 0.68],
       [0, 0.68],
-    ], 4),
-    16,
+    ], 2),
+    8,
   );
   // A little flatter front to back, like a body.
   torso.scale(1, 1, 0.72);
-  const head = new THREE.SphereGeometry(0.105, 14, 10);
+  const head = new THREE.SphereGeometry(0.105, 8, 6);
   head.scale(1, 1.12, 1);
   head.translate(0, 0.79, 0.01);
   const body = merge([torso, head]);
@@ -49,7 +52,7 @@ function personGeometry() {
 
   const arms: THREE.BufferGeometry[] = [];
   for (const side of [-1, 1]) {
-    const arm = new THREE.CapsuleGeometry(0.042, 0.38, 3, 8);
+    const arm = new THREE.CapsuleGeometry(0.042, 0.38, 2, 6);
     // Hanging from the shoulder, forearm resting forwards on the lap.
     arm.translate(0, -0.23, 0);
     arm.rotateX(-0.55);
@@ -86,10 +89,11 @@ function personGeometry() {
 
 /** A seat: a rounded shell with a back, behind and under the person. */
 function seatGeometry() {
-  const seat = roundedSlab(0.5, 0.44, 0.08, 0.08, 0.025);
+  const lean = { corner: 3, edge: 1 };
+  const seat = roundedSlab(0.5, 0.44, 0.08, 0.08, 0.025, lean);
   seat.rotateX(-Math.PI / 2);
   seat.translate(0, -0.04, 0.0);
-  const back = roundedSlab(0.5, 0.62, 0.07, 0.1, 0.025);
+  const back = roundedSlab(0.5, 0.62, 0.07, 0.1, 0.025, lean);
   back.rotateX(-0.12);
   back.translate(0, 0.28, -0.24);
   return merge([seat, back]);

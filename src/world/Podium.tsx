@@ -21,6 +21,7 @@ import {
   setNeon,
   SHADER_LIB,
 } from './materials';
+import { clamp01, smoothDamp, smoother } from './motion';
 import { reflectable } from './reflection';
 import { balloonKnot, cap, heartBalloon, offsetOutline, profile, roundedPlane, roundedRectOutline, roundedSlab, solid, sweep, turned } from './shapes';
 
@@ -46,24 +47,8 @@ const TRAP_FROM = 0.44;
 const SINK_FROM = 0.5;
 const SINK_TO = 0.94;
 
-const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
-const smoother = (t: number) => {
-  const x = clamp01(t);
-  return x * x * x * (x * (x * 6 - 15) + 10);
-};
 /** A balloon filling: quick, a little past full, settling back. */
 const inflateEase = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : 1 - Math.exp(-7 * t) * Math.cos(11 * t));
-
-/** Damped approach of a value to a goal over roughly `time` seconds. */
-function smoothDamp(current: number, goal: number, vel: { v: number }, time: number, dt: number) {
-  const omega = 2 / Math.max(0.0001, time);
-  const x = omega * dt;
-  const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
-  const change = current - goal;
-  const temp = (vel.v + omega * change) * dt;
-  vel.v = (vel.v - omega * temp) * exp;
-  return goal + (change + temp) * exp;
-}
 
 // --- shared pieces --------------------------------------------------------------
 
@@ -230,7 +215,12 @@ export function Podium({
   const spoken = useRef(0);
   const burst = useRef(false);
   // The balloon's sway: an offset from where it would hang, and its speed.
-  const sway = useRef({ p: new THREE.Vector3(), v: new THREE.Vector3(), last: new THREE.Vector3(), lastVel: new THREE.Vector3(), primed: false });
+  const sway = useMemo(() => ({ p: new THREE.Vector3(), v: new THREE.Vector3() }), []);
+  // Reused every frame, so the frame loop leaves nothing for the garbage collector.
+  const tmp = useMemo(
+    () => ({ trail: new THREE.Vector3(), force: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), limp: new THREE.Vector3(), bend: new THREE.Vector3(), world: new THREE.Vector3() }),
+    [],
+  );
   const seed = order * 1.7 + 0.3;
 
   const avatar = useMemo(() => canvasTexture(drawAvatar(contestant.look)), [contestant]);
@@ -365,61 +355,51 @@ export function Podium({
     if (b) {
       const inflate = inflateEase(c.inflate(order));
       let scale = 0.12 + 0.88 * inflate;
-      const st = sway.current;
-      // The podium's acceleration, turned into the podium's own frame, pushes the balloon the other way.
-      const here = new THREE.Vector3(x, y, z);
-      if (!st.primed) {
-        st.last.copy(here);
-        st.lastVel.set(0, 0, 0);
-        st.primed = true;
-      }
-      const vel = here.clone().sub(st.last).divideScalar(Math.max(dt, 1e-3));
-      const acc = vel.clone().sub(st.lastVel).divideScalar(Math.max(dt, 1e-3)).clampLength(0, 30);
-      st.last.copy(here);
-      st.lastVel.copy(vel);
-      acc.applyAxisAngle(new THREE.Vector3(0, 1, 0), a);
-      // A soft spring: k pulls it home, c damps it.
-      const force = st.p.clone().multiplyScalar(-14).addScaledVector(st.v, -3.2).addScaledVector(acc, -0.06);
-      st.v.addScaledVector(force, dt);
-      st.p.addScaledVector(st.v, dt);
-      st.p.clampLength(0, 0.35);
+      // Gliding sideways, the podium leaves its balloon a little behind: a
+      // soft spring pulls it towards a point trailing the movement. The glide
+      // speed comes straight from the smooth move, so the balloon never twitches.
+      const glide = angleVel.current.v * ARC_RADIUS;
+      tmp.trail.set(-glide * 0.14, 0, 0).clampLength(0, 0.3);
+      tmp.force.copy(tmp.trail).sub(sway.p).multiplyScalar(16).addScaledVector(sway.v, -3.4);
+      sway.v.addScaledVector(tmp.force, dt);
+      sway.p.addScaledVector(sway.v, dt);
 
       const bounce = c.bounce * Math.abs(Math.sin(now * 0.009 + seed)) * 0.2;
       let wobble = 0;
       let stretch = 1;
       if (popping) {
-        const k = clamp01(popT / POP_AT);
-        scale *= 1 + 0.42 * k * k;
+        const swell = clamp01(popT / POP_AT);
+        scale *= 1 + 0.42 * swell * swell;
         // Faster and faster trembling, then it goes.
-        wobble = k * k * 0.14 * Math.sin(now * (0.05 + k * 0.08));
-        stretch = 1 + k * k * 0.08 * Math.sin(now * 0.11);
+        wobble = swell * swell * 0.14 * Math.sin(now * (0.05 + swell * 0.08));
+        stretch = 1 + swell * swell * 0.08 * Math.sin(now * 0.11);
       }
       const gone = popping && popT >= POP_AT;
       b.visible = inflate > 0.005 && !gone;
       b.scale.set(scale / Math.sqrt(stretch), scale * stretch, scale / Math.sqrt(stretch));
       const idleX = Math.sin(now * 0.0007 + seed) * 0.035;
       const idleY = Math.sin(now * 0.0011 + seed) * 0.04;
-      b.position.set(idleX + st.p.x, PODIUM.balloonY + idleY + bounce + st.p.y * 0.3, st.p.z);
-      b.rotation.set(wobble + st.p.z * 0.6, Math.sin(now * 0.0005 + seed) * 0.35, Math.sin(now * 0.0009 + seed) * 0.08 + wobble - st.p.x * 0.6);
+      b.position.set(idleX + sway.p.x, PODIUM.balloonY + idleY + bounce, sway.p.z);
+      b.rotation.set(wobble, Math.sin(now * 0.0005 + seed) * 0.35, Math.sin(now * 0.0009 + seed) * 0.08 + wobble - sway.p.x * 0.8);
       balloonMaterial.emissiveIntensity = 0.12 + 0.25 * (popping ? clamp01(popT / POP_AT) : 0) + c.gold * 0.15 + c.bounce * 0.08;
 
       // The burst, exactly once.
       if (popping && popT >= POP_AT && !burst.current && frame.current.fx) {
         burst.current = true;
-        frame.current.fx.burst(b.getWorldPosition(new THREE.Vector3()), contestant.color);
+        frame.current.fx.burst(b.getWorldPosition(tmp.world), contestant.color);
       }
       if (!popping) burst.current = false;
 
       // The string, from the top of the monitor up to the knot. After the
       // burst its end drops and it hangs down the back of the monitor.
-      const from = new THREE.Vector3(0, PODIUM.monitorY + SCREEN.height / 2 + 0.03, -0.02);
-      const knot = new THREE.Vector3(b.position.x, b.position.y + k.heart.bottom * scale * stretch - 0.012, b.position.z);
+      const from = tmp.from.set(0, PODIUM.monitorY + SCREEN.height / 2 + 0.03, -0.02);
       const fall = popping ? smoother((popT - POP_AT) / 0.07) : 0;
-      const limp = from.clone().add(new THREE.Vector3(Math.sin(now * 0.004) * 0.02 * (1 - fall), -0.34, -0.05));
-      const to = knot.lerp(limp, fall);
-      const bend = from.clone().add(to).multiplyScalar(0.5);
-      bend.x -= st.v.x * 0.05 + (to.x - from.x) * 0.25;
-      bend.z -= st.v.z * 0.05;
+      const limp = tmp.limp.set(Math.sin(now * 0.004) * 0.02 * (1 - fall), -0.34, -0.05).add(from);
+      const to = tmp.to.set(b.position.x, b.position.y + k.heart.bottom * scale * stretch - 0.012, b.position.z).lerp(limp, fall);
+      // A taut string bows a little against the way the balloon swings.
+      const bend = tmp.bend.copy(from).add(to).multiplyScalar(0.5);
+      bend.x -= sway.v.x * 0.05 + (to.x - from.x) * 0.25;
+      bend.z -= sway.v.z * 0.05;
       bend.y -= fall * 0.05;
       const su = stringMaterial.uniforms;
       su.uFrom.value.copy(from);

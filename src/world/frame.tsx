@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { clock } from '../show/clock';
 import type { Phase, ShowState } from '../show/types';
 import { computeCues, type Cues } from './director';
+import { smoothDamp } from './motion';
 
 /**
  * What every part of the studio reads once per frame: the director's cues
@@ -40,21 +41,6 @@ function isCut(from: Phase | null, to: Phase) {
   return false;
 }
 
-/**
- * Glides a value towards a goal the way a camera operator would: it speeds up
- * gently, travels, and settles without overshooting — never a jolt, even when
- * the goal jumps somewhere else halfway through a move.
- */
-function smoothDamp(current: number, goal: number, velocity: { v: number }, smoothTime: number, dt: number) {
-  const st = Math.max(0.0001, smoothTime);
-  const omega = 2 / st;
-  const x = omega * dt;
-  const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
-  const change = current - goal;
-  const temp = (velocity.v + omega * change) * dt;
-  velocity.v = (velocity.v - omega * temp) * exp;
-  return goal + (change + temp) * exp;
-}
 
 class DampedVector {
   value = new THREE.Vector3();

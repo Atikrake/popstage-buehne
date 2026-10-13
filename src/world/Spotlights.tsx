@@ -1,11 +1,10 @@
 import { useFrame } from '@react-three/fiber';
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { headPosition } from './director';
 import { useFrameData } from './frame';
 import { TRUSS } from './layout';
 import { chrome, gunmetal, makeBeamMaterial, neon, setNeon } from './materials';
-import { reflectable } from './reflection';
 import { pipe, profile, turned } from './shapes';
 
 /**
@@ -17,7 +16,10 @@ import { pipe, profile, turned } from './shapes';
  */
 
 const DOWN = new THREE.Vector3(0, -1, 0);
-const LENS_AHEAD = 0.24;
+/** From the pivot of the head to the face of its lens. */
+const LENS_AHEAD = 0.215;
+/** The head hangs this far below where the fixture is clamped to the truss. */
+const PIVOT_DROP = 0.24;
 
 /** The pool of light a beam leaves: a bright core, a soft edge, stretched where it lands at a slant. */
 function makePoolMaterial() {
@@ -113,6 +115,9 @@ function Head({ index }: { index: number }) {
   if (!headKit) headKit = buildHead();
   const k = headKit;
   const home = useMemo(() => headPosition(index), [index]);
+  const pivot = useMemo(() => home.clone().setY(home.y - PIVOT_DROP), [home]);
+  const dir = useMemo(() => new THREE.Vector3(), []);
+  const lensAt = useMemo(() => new THREE.Vector3(), []);
   const fixture = useRef<THREE.Group>(null);
   const yoke = useRef<THREE.Group>(null);
   const head = useRef<THREE.Group>(null);
@@ -128,7 +133,6 @@ function Head({ index }: { index: number }) {
   const lens = useMemo(() => neon('#FFFFFF', 3.2), []);
   const poolMaterial = useMemo(() => makePoolMaterial(), []);
 
-  useLayoutEffect(() => reflectable(fixture.current), []);
 
   useFrame((_s, delta) => {
     const c = frame.current.cues;
@@ -141,7 +145,7 @@ function Head({ index }: { index: number }) {
     color.current.lerp(cue.color, 1 - Math.exp(-6 * dt));
 
     // Pan the yoke, tilt the head: a real moving head never rolls.
-    const dir = aim.current.clone().sub(home);
+    dir.copy(aim.current).sub(pivot);
     const length = dir.length();
     dir.normalize();
     const wantPan = Math.atan2(dir.x, dir.z);
@@ -154,7 +158,7 @@ function Head({ index }: { index: number }) {
     if (head.current) head.current.rotation.x = tilt.current;
 
     const strength = level.current * (0.3 + (1 - c.house) * 1.9);
-    const lensAt = home.clone().addScaledVector(dir, LENS_AHEAD);
+    lensAt.copy(pivot).addScaledVector(dir, LENS_AHEAD);
     if (beam.current) {
       beam.current.position.copy(lensAt);
       beam.current.quaternion.setFromUnitVectors(DOWN, dir);
@@ -186,7 +190,7 @@ function Head({ index }: { index: number }) {
         <mesh geometry={k.base} material={k.body} />
         <group ref={yoke}>
           <mesh geometry={k.yoke} material={k.body} />
-          <group ref={head} position={[0, -0.24, 0]}>
+          <group ref={head} position={[0, -PIVOT_DROP, 0]}>
             <mesh geometry={k.can} material={k.body} />
             <mesh geometry={k.bezel} material={k.trim} />
             <mesh geometry={k.lens} material={lens} />

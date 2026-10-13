@@ -416,7 +416,7 @@ export function heartBalloon(height = 0.66) {
     );
   };
   // A sphere whose poles look front and back, away from the point and the dip.
-  const sphere = new THREE.SphereGeometry(1, 72, 56);
+  const sphere = new THREE.SphereGeometry(1, 56, 42);
   sphere.rotateX(Math.PI / 2);
   const pos = sphere.getAttribute('position');
   const nor = sphere.getAttribute('normal');
@@ -536,11 +536,12 @@ export function roundedPlane(width: number, height: number, radius: number, segm
 
 /**
  * A slab with rounded corners and softly rounded edges, facing +z and
- * centred on the origin: bezels, frames, panels.
+ * centred on the origin: bezels, frames, panels. `detail` is how many steps
+ * make each rounded corner and edge — fewer for things seen only from afar.
  */
-export function roundedSlab(width: number, height: number, depth: number, radius: number, edge = Math.min(0.012, depth / 3)) {
+export function roundedSlab(width: number, height: number, depth: number, radius: number, edge = Math.min(0.012, depth / 3), detail = { corner: 8, edge: 4 }) {
   const r = Math.max(edge + 0.002, Math.min(radius, width / 2, height / 2));
-  const outline = roundedRectOutline(width, height, r, 8);
+  const outline = roundedRectOutline(width, height, r, detail.corner);
   const prof = profile(
     [
       [-edge, 0],
@@ -548,7 +549,7 @@ export function roundedSlab(width: number, height: number, depth: number, radius
       [0, depth, edge],
       [-edge, depth],
     ],
-    4,
+    detail.edge,
   );
   const inner = offsetOutline(outline, -edge);
   const geometry = merge([sweep(outline, prof), cap(inner, 0, -1), cap(inner, depth, 1)]);

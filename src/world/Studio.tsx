@@ -19,6 +19,9 @@ import { merge, orientFaces, profile, roundedRectOutline, solid, trussRing, turn
 const DOOR_GAP = 0.125;
 const PINK = new THREE.Color('#FF2D7A');
 const GOLD = new THREE.Color('#FFC86A');
+const COVE_PINK = new THREE.Color('#FF5AA0');
+const HALO_PINK = new THREE.Color('#FF4F98');
+const GAP_PINK = new THREE.Color('#FF7AB4');
 
 // --- the light the studio reflects -------------------------------------------
 
@@ -126,6 +129,7 @@ export function Lights({ quality }: { quality: Quality }) {
   const aim = useRef(new THREE.Vector3(0, 0.3, -3.6));
   const level = useRef(0);
   const deskAim = useMemo(() => HOST_DESK.clone().setY(1.1), []);
+  const seatAim = useMemo(() => new THREE.Vector3(), []);
 
   useLayoutEffect(() => reflectable(group.current), []);
   useLayoutEffect(() => {
@@ -161,7 +165,7 @@ export function Lights({ quality }: { quality: Quality }) {
     const onDesk = !s && c.hostLit > 0.01;
     const want = s ? 1 : onDesk ? c.hostLit * 0.8 : 0;
     level.current += (want - level.current) * (1 - Math.exp(-5 * dt));
-    if (s) aim.current.lerp(s.position.clone().setY(1.4), c.focusSnap ? 1 : 1 - Math.exp(-7 * dt));
+    if (s) aim.current.lerp(seatAim.copy(s.position).setY(1.4), c.focusSnap ? 1 : 1 - Math.exp(-7 * dt));
     else if (onDesk) aim.current.lerp(deskAim, 1 - Math.exp(-5 * dt));
     focusTarget.position.copy(aim.current);
     if (focus.current) {
@@ -259,7 +263,6 @@ function makeInlayFloor(rings: Ring[], color: string, roughness: number, mirror:
 export function Studio({ quality }: { quality: Quality }) {
   const frame = useFrameData();
   const q = QUALITY[quality];
-  const { gl, scene } = useThree();
   const studio = useRef<THREE.Group>(null);
   const floorMesh = useRef<THREE.Mesh>(null);
 
@@ -298,6 +301,7 @@ export function Studio({ quality }: { quality: Quality }) {
     [],
   );
 
+  // The mirror image is drawn just before the floor, with everything else already in place.
   useEffect(() => {
     const mesh = floorMesh.current;
     if (!mesh || !mirror) return;
@@ -305,7 +309,7 @@ export function Studio({ quality }: { quality: Quality }) {
     return () => {
       mesh.onBeforeRender = () => undefined;
     };
-  }, [gl, mirror, scene]);
+  }, [mirror]);
 
   const mats = useMemo(() => {
     const stars = { uStars: { value: 1 }, uTime: { value: 0 } };
@@ -333,7 +337,7 @@ export function Studio({ quality }: { quality: Quality }) {
     return {
       stars,
       lacquer: lacquer('#F6F0F3', 0.3),
-      wall: makeFlutedWall(),
+      ...makeFlutedWall(),
       band: new THREE.MeshStandardMaterial({ color: '#2A1220', roughness: 0.75, side: THREE.BackSide }),
       ceiling,
       truss: chrome('#C9C3C8', 0.28),
@@ -452,13 +456,13 @@ export function Studio({ quality }: { quality: Quality }) {
     setNeon(mats.halo, c.stageEdge * (0.55 + pulse * 0.6), 0.02);
     setNeon(mats.tierLight, c.slats * 0.7, 0.03);
     // Gold creeps into the room for the finale.
-    (mats.cove.userData.base as THREE.Color).set('#FF5AA0').lerp(GOLD, c.gold * 0.7);
-    (mats.halo.userData.base as THREE.Color).set('#FF4F98').lerp(GOLD, c.gold * 0.8);
-    const w = mats.wall.userData.uniforms as WallUniforms;
+    (mats.cove.userData.base as THREE.Color).copy(COVE_PINK).lerp(GOLD, c.gold * 0.7);
+    (mats.halo.userData.base as THREE.Color).copy(HALO_PINK).lerp(GOLD, c.gold * 0.8);
+    const w = mats.wallUniforms;
     w.uGlow.value = c.slats * (0.7 + pulse * 0.4);
     w.uReveal.value = c.reveal;
     w.uTime.value = frame.current.now / 1000;
-    w.uColor.value.set('#FF7AB4').lerp(GOLD, c.gold * 0.6);
+    w.uColor.value.copy(GAP_PINK).lerp(GOLD, c.gold * 0.6);
     for (const f of [floor, stageTop]) {
       f.uniforms.uGlow.value = c.stageEdge * (0.85 + pulse * 0.5);
       f.uniforms.uReveal.value = c.reveal;
@@ -470,45 +474,51 @@ export function Studio({ quality }: { quality: Quality }) {
 
   const R = STAGE_RADIUS;
   return (
-    <group ref={studio}>
+    <group>
       {/* The floor. */}
       <mesh ref={floorMesh} rotation={[-Math.PI / 2, 0, 0]} material={floor.material} receiveShadow>
         <circleGeometry args={[STUDIO_RADIUS + 0.3, 160]} />
       </mesh>
 
-      {/* The stage, floating on its line of light. */}
-      <group position={[STAGE_CENTER.x, 0, STAGE_CENTER.z]}>
-        <mesh geometry={shapes.plinth} material={mats.lacquer} receiveShadow />
-        <mesh geometry={shapes.rim} material={mats.lacquer} receiveShadow />
-        <mesh geometry={shapes.disc} material={stageTop.material} receiveShadow />
-        <mesh position={[0, 0.152, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.edge}>
-          <torusGeometry args={[R - 0.05, 0.011, 6, 200]} />
+      {/* What shows in the floor's mirror: the stage, the walls and their light. */}
+      <group ref={studio}>
+        {/* The stage, floating on its line of light. */}
+        <group position={[STAGE_CENTER.x, 0, STAGE_CENTER.z]}>
+          <mesh geometry={shapes.plinth} material={mats.lacquer} receiveShadow />
+          <mesh geometry={shapes.rim} material={mats.lacquer} receiveShadow />
+          <mesh geometry={shapes.disc} material={stageTop.material} receiveShadow />
+          <mesh position={[0, 0.152, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.edge}>
+            <torusGeometry args={[R - 0.05, 0.011, 6, 200]} />
+          </mesh>
+          <mesh position={[0, 0.143, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.edge}>
+            <torusGeometry args={[R + 0.6, 0.01, 6, 200]} />
+          </mesh>
+        </group>
+
+        {/* The wall, fluted, with a gap where the corridor comes in. */}
+        <mesh position={[0, 3.1, 0]} material={mats.wall}>
+          <cylinderGeometry args={[STUDIO_RADIUS, STUDIO_RADIUS, 6.2, 192, 1, true, DOOR_GAP, Math.PI * 2 - DOOR_GAP * 2]} />
         </mesh>
-        <mesh position={[0, 0.143, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.edge}>
-          <torusGeometry args={[R + 0.6, 0.01, 6, 200]} />
+        {/* Skirting along the foot of the wall. */}
+        <mesh position={[0, 0.06, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.lacquer}>
+          <torusGeometry args={[STUDIO_RADIUS - 0.04, 0.07, 8, 192]} />
         </mesh>
+        {/* The soffit and cove where wall meets ceiling. */}
+        <mesh position={[0, 6.22, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.soffit}>
+          <torusGeometry args={[STUDIO_RADIUS - 0.25, 0.045, 8, 192]} />
+        </mesh>
+        <mesh position={[0, 6.48, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.cove}>
+          <torusGeometry args={[STUDIO_RADIUS - 1.4, 0.06, 8, 192]} />
+        </mesh>
+        <LedSurround column={shapes.column} strips={shapes.columnStrips} material={mats.lacquer} />
       </group>
 
-      {/* The wall, fluted, with a gap where the corridor comes in. */}
-      <mesh position={[0, 3.1, 0]} material={mats.wall}>
-        <cylinderGeometry args={[STUDIO_RADIUS, STUDIO_RADIUS, 6.2, 192, 1, true, DOOR_GAP, Math.PI * 2 - DOOR_GAP * 2]} />
-      </mesh>
+      {/* Up high and off to the sides: not worth drawing a second time in the mirror. */}
       <mesh position={[0, 7.9, 0]} material={mats.band}>
         <cylinderGeometry args={[STUDIO_RADIUS, STUDIO_RADIUS, 3.4, 128, 1, true]} />
       </mesh>
-      {/* Skirting along the foot of the wall. */}
-      <mesh position={[0, 0.06, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.lacquer}>
-        <torusGeometry args={[STUDIO_RADIUS - 0.04, 0.07, 8, 192]} />
-      </mesh>
-      {/* The soffit and cove where wall meets ceiling. */}
-      <mesh position={[0, 6.22, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.soffit}>
-        <torusGeometry args={[STUDIO_RADIUS - 0.25, 0.045, 8, 192]} />
-      </mesh>
       <mesh position={[0, 6.5, 0]} rotation={[-Math.PI / 2, 0, 0]} material={mats.ceiling}>
         <ringGeometry args={[STUDIO_RADIUS - 1.4, STUDIO_RADIUS, 128]} />
-      </mesh>
-      <mesh position={[0, 6.48, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.cove}>
-        <torusGeometry args={[STUDIO_RADIUS - 1.4, 0.06, 8, 192]} />
       </mesh>
       <mesh position={[0, 9.6, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.ceiling}>
         <circleGeometry args={[STUDIO_RADIUS + 0.2, 96]} />
@@ -531,8 +541,6 @@ export function Studio({ quality }: { quality: Quality }) {
           </group>
         ))}
       </group>
-
-      <LedSurround column={shapes.column} strips={shapes.columnStrips} material={mats.lacquer} />
     </group>
   );
 }
@@ -663,8 +671,7 @@ function makeFlutedWall() {
       `,
     },
   });
-  material.userData.uniforms = uniforms;
-  return material;
+  return { wall: material, wallUniforms: uniforms };
 }
 
 // --- either side of the LED wall ------------------------------------------------

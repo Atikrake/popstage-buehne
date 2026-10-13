@@ -251,7 +251,7 @@ function makeDoorwayGlow() {
         float across = 1.0 - smoothstep(0.0, 0.5 * uOpen + 0.02, abs(vUv.x - 0.5));
         float up = smoothstep(1.0, 0.0, vUv.y) * 0.7 + 0.3;
         // Gone by the time the camera walks through it.
-        float k = across * up * uOpen * 0.9 * smoothstep(0.4, 2.6, vDepth);
+        float k = across * up * uOpen * 0.6 * smoothstep(2.5, 6.0, vDepth);
         gl_FragColor = vec4(uColor * k, k);
       }
     `,
