@@ -1,6 +1,6 @@
 import { useFrame } from '@react-three/fiber';
-import { Bloom, EffectComposer, ToneMapping, Vignette } from '@react-three/postprocessing';
-import { ToneMappingMode } from 'postprocessing';
+import { Bloom, EffectComposer, Noise, ToneMapping, Vignette } from '@react-three/postprocessing';
+import { BlendFunction, ToneMappingMode } from 'postprocessing';
 import { useMemo } from 'react';
 import * as THREE from 'three';
 import { QUALITY, type Quality } from '../quality';
@@ -11,9 +11,9 @@ import { Corridor } from './Corridor';
 import { Crowd } from './Crowd';
 import { Effects } from './Effects';
 import { Director } from './frame';
+import { HostBackdrop } from './HostBackdrop';
 import { canvasTexture } from './materials';
 import { Podium } from './Podium';
-import { HostBackdrop } from './HostBackdrop';
 import { HostDesk, LedWall } from './Screens';
 import { Spotlights } from './Spotlights';
 import { Environment, Lights, Studio } from './Studio';
@@ -47,7 +47,7 @@ export function StudioWorld({
   return (
     <Director state={state}>
       <Environment />
-      <Lights />
+      <Lights quality={quality} />
       <Studio quality={quality} />
       <Corridor />
       <LedWall />
@@ -58,12 +58,14 @@ export function StudioWorld({
       {onStage.map((c) => (
         <Podium key={c.id} contestant={c} order={state.contestants.indexOf(c)} onTap={onTap} picture={pictures[c.id] ?? null} />
       ))}
-      <Effects confettiCount={q.confetti} dustCount={q.dust} />
+      <Effects confettiCount={q.confetti} dustCount={q.dust} sparkCount={q.sparks} />
       {q.composer ? (
-        <EffectComposer multisampling={quality === 'high' ? 4 : 0} enableNormalPass={false}>
-          <Bloom mipmapBlur intensity={0.85} luminanceThreshold={1.0} luminanceSmoothing={0.25} radius={0.72} resolutionScale={quality === 'high' ? 1 : 0.5} />
+        <EffectComposer multisampling={q.msaa} enableNormalPass={false}>
+          <Bloom mipmapBlur intensity={0.9} luminanceThreshold={1.0} luminanceSmoothing={0.3} radius={0.75} resolutionScale={quality === 'high' ? 1 : 0.5} />
           <ToneMapping mode={ToneMappingMode.NEUTRAL} />
-          <Vignette offset={0.32} darkness={0.5} />
+          <Vignette offset={0.3} darkness={0.5} />
+          {/* A whisper of film grain: it hides banding in the dark gradients. */}
+          <Noise premultiply blendFunction={BlendFunction.SOFT_LIGHT} opacity={0.07} />
         </EffectComposer>
       ) : (
         <PlainToneMapping />

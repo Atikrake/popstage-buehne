@@ -227,8 +227,19 @@ export function App() {
       <Canvas
         key={quality}
         dpr={[1, QUALITY[quality].dpr * dprScale]}
+        shadows={QUALITY[quality].shadows > 0 ? 'percentage' : false}
         gl={{ antialias: !QUALITY[quality].composer, powerPreference: 'high-performance', toneMapping: THREE.NeutralToneMapping }}
         camera={{ fov: 50, near: 0.1, far: 120, position: [0, 6, 14] }}
+        onCreated={({ gl }) => {
+          // Testing aid in development builds only: shader problems collected where a test can read them.
+          if (!import.meta.env.DEV) return;
+          const errors: string[] = [];
+          (window as unknown as { __shaderErrors: string[] }).__shaderErrors = errors;
+          gl.debug.onShaderError = (context, program, vertex, fragment) => {
+            const log = (shader: WebGLShader) => context.getShaderInfoLog(shader) ?? '';
+            errors.push(`${context.getProgramInfoLog(program) ?? ''}\n${log(vertex)}\n${log(fragment)}`.trim());
+          };
+        }}
       >
         {/* When the phone cannot keep up, the picture gets a little softer instead of jerky. */}
         <PerformanceMonitor onDecline={() => setDprScale((s) => Math.max(0.6, s - 0.15))} onIncline={() => setDprScale((s) => Math.min(1, s + 0.1))} flipflops={4} />

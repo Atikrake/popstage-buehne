@@ -312,19 +312,34 @@ export function drawAvatar(look: Look) {
 // --- name plates ------------------------------------------------------------
 
 export function drawNamePlate(c: Contestant) {
-  const { canvas, ctx } = makeCanvas(512, 136);
-  ctx.fillStyle = '#0E0A0D';
-  ctx.fillRect(0, 0, 512, 136);
-  ctx.fillStyle = c.color;
-  ctx.fillRect(0, 0, 12, 136);
+  const W = 512;
+  const H = 136;
+  const { canvas, ctx } = makeCanvas(W, H);
+  // Backlit smoked acrylic: dark, a little lighter at the top, a line of their colour below.
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#231920');
+  bg.addColorStop(0.55, '#120C10');
+  bg.addColorStop(1, '#0B070A');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  const line = ctx.createLinearGradient(0, 0, W, 0);
+  line.addColorStop(0, rgba(c.color, 0));
+  line.addColorStop(0.5, rgba(c.color, 1));
+  line.addColorStop(1, rgba(c.color, 0));
+  ctx.fillStyle = line;
+  ctx.fillRect(0, H - 7, W, 4);
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = `800 64px ${DISPLAY}`;
+  ctx.font = `800 62px ${DISPLAY}`;
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText(c.name.toUpperCase(), 40, 76);
+  ctx.shadowColor = rgba(c.color, 0.7);
+  ctx.shadowBlur = 18;
+  ctx.fillText(c.name.toUpperCase(), 38, 74);
+  ctx.shadowBlur = 0;
   ctx.fillStyle = 'rgba(255,255,255,0.62)';
-  ctx.font = `600 26px ${BODY}`;
-  ctx.fillText(`${c.age} · ${c.persona.toUpperCase()}`, 42, 114);
-  heart(ctx, 462, 66, 46, c.color);
+  ctx.font = `600 25px ${BODY}`;
+  const label = c.age ? `${c.age} · ${c.persona.toUpperCase()}` : c.persona.toUpperCase();
+  ctx.fillText(label, 40, 110);
+  heart(ctx, 458, 64, 46, c.color);
   return canvas;
 }
 
@@ -819,7 +834,7 @@ export function drawPoster(kind: 0 | 1 | 2) {
     for (let i = 0; i < 5; i += 1) heart(ctx, 96 + i * 80, 330, 64, i === 2 ? PINK : '#FFFFFF');
     ctx.font = `800 46px ${DISPLAY}`;
     ctx.fillText('5 KANDIDATEN', 256, 500);
-    ctx.fillText('5 RUNDEN', 256, 566);
+    ctx.fillText('1 BLEIBT', 256, 566);
     ctx.fillText('1 HOST', 256, 632);
   }
   return canvas;

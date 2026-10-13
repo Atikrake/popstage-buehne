@@ -14,8 +14,8 @@ export const STAGE_RADIUS = 6.4;
 export const STAGE_TOP = 0.32;
 
 /** The arc the podiums stand on, and the point they all face. */
-const ARC_CENTER = new THREE.Vector3(0, 0, 4.8);
-const ARC_RADIUS = 8.6;
+export const ARC_CENTER = new THREE.Vector3(0, 0, 4.8);
+export const ARC_RADIUS = 8.6;
 const GAP_DEG: Record<number, number> = { 1: 0, 2: 15, 3: 13.5, 4: 11.5, 5: 9.6, 6: 8.4 };
 
 export const HOST_DESK = new THREE.Vector3(0, 0, 6.4);
@@ -57,7 +57,8 @@ export function seatMap(ids: string[]) {
   return map;
 }
 
-export type Shot = { position: THREE.Vector3; target: THREE.Vector3; fov: number };
+/** Where the camera stands, what it looks at, its lens, and (rarely) a lean to one side, in radians. */
+export type Shot = { position: THREE.Vector3; target: THREE.Vector3; fov: number; roll?: number };
 
 /**
  * A field of view wide enough for `halfWidth` units across at `distance` on

@@ -47,7 +47,17 @@ export type Cues = {
   host: HostScreenView;
   corridorLights: number;
   doorOpen: number;
-  /** Per seat index, during the intro: the podium coming up, the balloon filling. */
+  /**
+   * The studio waking up in the intro, 0 … 1: light running round the walls
+   * and out across the floor. 1 the rest of the time.
+   */
+  reveal: number;
+  /** The LED wall's panels coming on, 0 … 1. */
+  ledReveal: number;
+  /**
+   * Per seat index, during the intro: how far the podium has come up and the
+   * balloon has filled, 0 … 1 at an even pace — the podium adds its own easing.
+   */
   rise: (seatIndex: number) => number;
   inflate: (seatIndex: number) => number;
   spots: SpotCue[];
@@ -69,7 +79,13 @@ export type Cues = {
   popId: string | null;
   popT: number;
   confettiRain: number;
+  /** Cold-spark fountains along the front of the stage, 0 … 1. */
+  sparks: number;
   gold: number;
+  /** A jolt through the camera (the burst), 0 … 1. */
+  shake: number;
+  /** Whose answer is running, and how much of their time is left (1 → 0). */
+  timer: { id: string; fraction: number } | null;
   seats: Map<string, Seat>;
 };
 
@@ -83,6 +99,12 @@ const smooth = (edge0: number, edge1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 const easeOut = (t: number) => 1 - Math.pow(1 - THREE.MathUtils.clamp(t, 0, 1), 3);
+/** Like smooth, with no jolt at either end: speed and acceleration start and end at zero. */
+const smoother = (edge0: number, edge1: number, x: number) => {
+  const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * t * (t * (t * 6 - 15) + 10);
+};
+const linear = (edge0: number, edge1: number, x: number) => THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
 
 /** Lights come on with a little flicker, like real ones. */
 function switchOn(t: number, at: number) {
@@ -133,58 +155,89 @@ function aimAt(s: Seat) {
   return s.position.clone().setY(STAGE_TOP);
 }
 
-function pathAt(keys: { at: number; p: THREE.Vector3 }[], t: number) {
-  if (t <= keys[0].at) return keys[0].p.clone();
-  for (let i = 0; i < keys.length - 1; i += 1) {
+/** `turn`: the camera is furthest to one side here, so its sideways speed is zero. */
+type Key = { at: number; p: THREE.Vector3; turn?: boolean };
+
+/**
+ * A camera move through key moments, smooth in time: at each key the camera
+ * keeps the speed its neighbours imply (a Catmull-Rom velocity), so it flows
+ * through the key instead of stopping there; it starts and ends at rest.
+ */
+function track(keys: Key[]) {
+  const n = keys.length;
+  const velocity = keys.map((_, i) => {
+    if (i === 0 || i === n - 1) return new THREE.Vector3();
+    const before = keys[i - 1];
+    const after = keys[i + 1];
+    const v = after.p.clone().sub(before.p).divideScalar(after.at - before.at);
+    // A swing reverses here: like a pendulum, it pauses sideways, not in height or depth.
+    if (keys[i].turn) v.x = 0;
+    return v;
+  });
+  return (t: number) => {
+    if (t <= keys[0].at) return keys[0].p.clone();
+    if (t >= keys[n - 1].at) return keys[n - 1].p.clone();
+    let i = 0;
+    while (t > keys[i + 1].at) i += 1;
     const a = keys[i];
     const b = keys[i + 1];
-    if (t <= b.at) {
-      // Catmull-Rom through the neighbours, so the move never kinks at a key.
-      const p0 = keys[Math.max(0, i - 1)].p;
-      const p3 = keys[Math.min(keys.length - 1, i + 2)].p;
-      const u = (t - a.at) / (b.at - a.at);
-      const k = u * u * (3 - 2 * u);
-      const k2 = k * k;
-      const k3 = k2 * k;
-      const axis = (q0: number, q1: number, q2: number, q3: number) =>
-        0.5 * (2 * q1 + (-q0 + q2) * k + (2 * q0 - 5 * q1 + 4 * q2 - q3) * k2 + (-q0 + 3 * q1 - 3 * q2 + q3) * k3);
-      return new THREE.Vector3(axis(p0.x, a.p.x, b.p.x, p3.x), axis(p0.y, a.p.y, b.p.y, p3.y), axis(p0.z, a.p.z, b.p.z, p3.z));
-    }
-  }
-  return keys[keys.length - 1].p.clone();
+    const h = b.at - a.at;
+    const s = (t - a.at) / h;
+    const s2 = s * s;
+    const s3 = s2 * s;
+    // Cubic Hermite: position and speed match at both ends of every stretch.
+    return a.p
+      .clone()
+      .multiplyScalar(2 * s3 - 3 * s2 + 1)
+      .addScaledVector(velocity[i], h * (s3 - 2 * s2 + s))
+      .addScaledVector(b.p, -2 * s3 + 3 * s2)
+      .addScaledVector(velocity[i + 1], h * (s3 - s2));
+  };
 }
+
+/** The steps the walk takes: one every 520 ms, in time with the footstep sounds. */
+const STEP_FIRST = 250;
+const STEP_MS = 520;
+
+const LAND = INTRO.introLand;
+const introPosition = track([
+  { at: 0, p: new THREE.Vector3(0, 1.6, 40.6) },
+  { at: 2_800, p: new THREE.Vector3(0, 1.63, 29.6) },
+  { at: INTRO.walkEnd, p: new THREE.Vector3(0, 1.68, 18.4) },
+  { at: 6_900, p: new THREE.Vector3(0, 1.8, 13.4) },
+  { at: 8_300, p: new THREE.Vector3(-0.4, 2.5, 10.6) },
+  // Up and out to the left, over the audience, while the studio lights up…
+  { at: 10_600, p: new THREE.Vector3(-4.8, 6.2, 9.6), turn: true },
+  // …then one long descending arc down onto the host's shoulder.
+  { at: 12_900, p: new THREE.Vector3(-2.2, 4.6, 11.7) },
+  { at: LAND, p: hostShot(1).position },
+]);
+const introTarget = track([
+  { at: 0, p: new THREE.Vector3(0, 1.6, 20) },
+  { at: 2_800, p: new THREE.Vector3(0, 1.62, 12) },
+  { at: INTRO.walkEnd, p: new THREE.Vector3(0, 1.75, 4) },
+  { at: 6_900, p: new THREE.Vector3(0, 2.2, 0) },
+  { at: 8_300, p: new THREE.Vector3(0, 2.6, -3.6) },
+  { at: 10_600, p: new THREE.Vector3(0, 1.7, -3.4) },
+  { at: 12_900, p: new THREE.Vector3(0, 1.9, -3.6) },
+  { at: LAND, p: hostShot(1).target },
+]);
 
 function introShot(t: number, aspect: number): Shot {
   const host = hostShot(aspect);
-  const positions = [
-    { at: 0, p: new THREE.Vector3(0, 1.62, 41) },
-    { at: INTRO.walkEnd, p: new THREE.Vector3(0, 1.66, 19.4) },
-    { at: 6_900, p: new THREE.Vector3(0, 1.72, 15.6) },
-    { at: 8_300, p: new THREE.Vector3(0, 2.2, 12.6) },
-    { at: 10_600, p: new THREE.Vector3(-4.4, 6.6, 10.4) },
-    { at: 13_000, p: new THREE.Vector3(3.4, 5.4, 10.8) },
-    { at: 15_000, p: host.position.clone() },
-    { at: 16_000, p: host.position.clone() },
-  ];
-  const targets = [
-    { at: 0, p: new THREE.Vector3(0, 1.6, 20) },
-    { at: INTRO.walkEnd, p: new THREE.Vector3(0, 1.75, 4) },
-    { at: 6_900, p: new THREE.Vector3(0, 2.2, 0) },
-    { at: 8_300, p: new THREE.Vector3(0, 2.6, -3.6) },
-    { at: 10_600, p: new THREE.Vector3(0, 1.6, -3.4) },
-    { at: 13_000, p: new THREE.Vector3(0, 1.9, -3.8) },
-    { at: 15_000, p: host.target.clone() },
-    { at: 16_000, p: host.target.clone() },
-  ];
-  const position = pathAt(positions, t);
-  const target = pathAt(targets, t);
-  if (t < INTRO.walkEnd) {
-    // Footsteps.
-    position.y += Math.sin(t * 0.0105) * 0.024;
-    position.x += Math.sin(t * 0.00525) * 0.035;
-  }
-  const fov = t < 8_000 ? 60 : THREE.MathUtils.lerp(60, host.fov, smooth(8_000, 15_000, t));
-  return { position, target, fov };
+  const position = introPosition(t);
+  const target = introTarget(t);
+  // Footsteps: lowest as each foot lands, a soft rise in between (a steadicam
+  // takes the edge off every step), fading as it glides through the doors.
+  const walk = smooth(0, 700, t) * (1 - smooth(4_800, 6_000, t));
+  const step = Math.max(0, t - STEP_FIRST) / STEP_MS;
+  position.y += -Math.cos(Math.PI * 2 * step) * 0.012 * walk;
+  position.x += Math.sin(Math.PI * step) * 0.014 * walk;
+  // The crane leans gently into its swing, and straightens as it lands.
+  const swing = THREE.MathUtils.clamp((t - 8_300) / (LAND - 8_300), 0, 1);
+  const roll = -Math.sin(swing * Math.PI) * 0.028;
+  const fov = THREE.MathUtils.lerp(62, host.fov, smoother(7_600, LAND, t));
+  return { position, target, fov, roll };
 }
 
 function centroid(seats: Seat[]) {
@@ -217,6 +270,8 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     corridorLights: 99,
     // Closed again once everybody is in: behind the host is the entrance, not a hole.
     doorOpen: 0,
+    reveal: 1,
+    ledReveal: 1,
     rise: () => 1,
     inflate: () => 1,
     spots,
@@ -231,7 +286,10 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     popId: null,
     popT: 0,
     confettiRain: 0,
+    sparks: 0,
     gold: 0,
+    shake: 0,
+    timer: null,
     seats,
   };
 
@@ -277,28 +335,33 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
     case 'intro': {
       cues.shot = introShot(t, aspect);
       cues.ease = 0;
-      cues.handheld = t > INTRO.insideAt ? 0.6 : 0;
+      cues.handheld = 0.6 * smooth(INTRO.insideAt - 600, INTRO.insideAt + 600, t);
       cues.corridorLights = Math.max(0, (t - INTRO.corridorLightsFrom) / INTRO.corridorLightStep);
-      cues.doorOpen = smooth(INTRO.doorsOpen, INTRO.doorsOpen + INTRO.doorsOpenDur, t);
-      cues.house = 0.04 + 0.96 * smooth(INTRO.coveOn + 300, INTRO.podiumsFrom + 1_200, t);
-      cues.cove = switchOn(t, INTRO.coveOn);
+      cues.doorOpen = smoother(INTRO.doorsOpen, INTRO.doorsOpen + INTRO.doorsOpenDur, t);
+      // Before the show the studio stands in a dim pink glow; then it wakes up piece by piece.
+      cues.house = 0.04 + 0.96 * smoother(INTRO.coveOn + 300, INTRO.podiumsFrom + 1_400, t);
+      cues.cove = Math.max(0.14, switchOn(t, INTRO.coveOn));
+      cues.reveal = smoother(INTRO.coveOn, INTRO.coveOn + INTRO.revealDur, t);
       cues.slats = smooth(INTRO.slatsOn, INTRO.slatsOn + 900, t);
-      cues.stageEdge = switchOn(t, INTRO.spotsFrom + 200);
+      cues.stageEdge = Math.max(0.1, switchOn(t, INTRO.spotsFrom + 200));
       cues.ledPower = t < INTRO.ledBoot ? 0 : 1;
+      cues.ledReveal = linear(INTRO.ledBoot, INTRO.ledLogo, t);
       cues.led =
         t < INTRO.ledBoot
           ? { kind: 'off' }
           : t < INTRO.ledLogo
             ? { kind: 'boot', progress: (t - INTRO.ledBoot) / (INTRO.ledLogo - INTRO.ledBoot) }
             : { kind: 'logo' };
-      cues.rise = (i) => easeOut((t - INTRO.podiumsFrom - i * INTRO.podiumStep) / INTRO.podiumRise);
-      cues.inflate = (i) =>
-        easeOut((t - INTRO.podiumsFrom - i * INTRO.podiumStep - INTRO.balloonDelay) / INTRO.balloonInflate);
+      cues.rise = (i) => linear(0, INTRO.podiumRise, t - INTRO.podiumsFrom - i * INTRO.podiumStep);
+      cues.inflate = (i) => linear(0, INTRO.balloonInflate, t - INTRO.podiumsFrom - i * INTRO.podiumStep - INTRO.balloonDelay);
       spots.forEach((spot, index) => {
         spot.level = switchOn(t, INTRO.spotsFrom + index * INTRO.spotStep);
         spot.aim = sweepAim(index, now, 1.6, 1.1);
         spot.color = index % 3 === 0 ? PINK.clone() : WHITE.clone();
       });
+      // The logo lands: a flash through the room and sparks along the stage.
+      cues.flash = t > INTRO.ledLogo ? Math.max(0, 1 - (t - INTRO.ledLogo) / 600) * 0.45 : 0;
+      cues.sparks = smooth(INTRO.ledLogo - 100, INTRO.ledLogo + 150, t) * (1 - smooth(INTRO.ledLogo + INTRO.sparksFor - 500, INTRO.ledLogo + INTRO.sparksFor, t));
       cues.applause = smooth(INTRO.ledLogo - 400, INTRO.ledLogo + 600, t) * (1 - smooth(14_000, 15_800, t));
       cues.host = { kicker: 'Gleich live', line: 'Die Show beginnt', seconds: null, urgent: false };
       break;
@@ -308,7 +371,10 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       const slot = presentSlot(state, now);
       if (slot.kind === 'host') {
         // The host first: the camera comes in towards the desk from the stage.
-        cues.shot = reverseShot(aspect, easeOut(slot.progress) * 0.85);
+        const shot = reverseShot(aspect, easeOut(slot.progress) * 0.85);
+        // Curving in from one side as it closes on the desk.
+        shot.position.x += (1 - easeOut(slot.progress)) * 1.4;
+        cues.shot = shot;
         cues.ease = slot.progress < 0.05 ? 0.9 : 1.4;
         lightHost(1);
         cues.hostLit = 1;
@@ -321,7 +387,13 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
         const c = state.contestants[slot.index];
         const s = seats.get(c.id);
         // First the profile on the wall above them, then in to their face.
-        if (s) cues.shot = presentShot(s, aspect, smooth(0.58, 0.95, slot.progress));
+        if (s) {
+          const shot = presentShot(s, aspect, smoother(0.55, 0.95, slot.progress));
+          // Never quite still: a slow drift across while the profile is up.
+          const right = new THREE.Vector3(s.facing.z, 0, -s.facing.x);
+          shot.position.addScaledVector(right, (slot.progress - 0.5) * 0.9 * (1 - smoother(0.55, 0.95, slot.progress)));
+          cues.shot = shot;
+        }
         cues.ease = slot.progress < 0.06 ? 0.9 : 1.1;
         light(c.id, 1, WHITE, 0.12);
         cues.focusId = c.id;
@@ -394,7 +466,13 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       const turn = currentTurn(state, now);
       const s = turn ? seats.get(turn.id) : null;
       const c = byId(state, turn?.id ?? null);
-      if (s) cues.shot = answerShot(s, aspect);
+      if (s && turn) {
+        const shot = answerShot(s, aspect);
+        // A slow push in over their ten seconds, building a little tension.
+        shot.position.lerp(shot.target, turn.progress * 0.12);
+        cues.shot = shot;
+        cues.timer = { id: turn.id, fraction: turn.left / TURN_MS };
+      }
       cues.ease = 1.1;
       light(turn?.id ?? null, 1, WHITE, 0.2);
       cues.focusId = turn?.id ?? null;
@@ -476,8 +554,8 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       if (target) {
         const shot = contestantShot(target, aspect, 0.25, 0);
         // Pull back as the podium goes down.
-        shot.position.addScaledVector(target.facing, smooth(1_200, 2_500, t) * 1.4);
-        shot.target.y -= smooth(1_200, 2_500, t) * 0.5;
+        shot.position.addScaledVector(target.facing, smoother(1_200, 2_600, t) * 1.4);
+        shot.target.y -= smoother(1_200, 2_600, t) * 0.5;
         cues.shot = shot;
       }
       cues.ease = 0.7;
@@ -489,13 +567,16 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
       cues.othersDim = 0.4;
       light(state.target, 1, t < 700 ? WHITE : RED, 0.1);
       cues.flash = t > 700 ? Math.max(0, 1 - (t - 700) / 450) : 0;
+      // The bang goes through the camera.
+      cues.shake = t > 700 ? Math.exp(-(t - 700) / 260) : 0;
       cues.led = t < 700 || !c ? { kind: 'verdict', round, total } : { kind: 'out', contestant: c };
       cues.host = { kicker: 'POP', line: c ? `${c.name} geht` : '', seconds: null, urgent: false };
       break;
     }
 
     case 'regroup': {
-      cues.shot = wideShot(aspect);
+      const wide = wideShot(aspect);
+      cues.shot = { ...wide, position: wide.position.clone().lerp(wide.target, smoother(0, DUR.regroup, t) * 0.06) };
       cues.ease = 1.2;
       spots.forEach((spot, index) => {
         const s = seatList[index];
@@ -535,6 +616,7 @@ export function computeCues(state: ShowState, now: number, aspect: number): Cues
         cues.ease = since < 400 ? 1.2 : 0.5;
         cues.gold = smooth(0, 800, since);
         cues.confettiRain = 1 - smooth(6_500, 9_000, since);
+        cues.sparks = smooth(250, 600, since) * (1 - smooth(3_800, 4_800, since));
         cues.applause = 1 - smooth(5_000, 8_000, since);
         cues.bounce = 0.6;
         spots.forEach((spot, index) => {

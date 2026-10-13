@@ -38,8 +38,9 @@ export const INTRO = {
   doorsOpenDur: 1_300,
   /** Through the doors, into the dark studio. */
   insideAt: 8_000,
-  /** The studio switches on, piece by piece. */
+  /** The studio switches on, piece by piece: light runs round the walls first. */
   coveOn: 8_300,
+  revealDur: 1_900,
   slatsOn: 8_700,
   spotsFrom: 9_000,
   spotStep: 190,
@@ -51,6 +52,10 @@ export const INTRO = {
   podiumRise: 900,
   balloonDelay: 500,
   balloonInflate: 700,
+  /** Cold sparks along the front of the stage as the logo lands. */
+  sparksFor: 2_200,
+  /** The camera arrives over the host's shoulder and holds there. */
+  introLand: 15_000,
 } as const;
 
 export const QUESTIONS = [

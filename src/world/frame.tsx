@@ -109,14 +109,26 @@ export function Director({ state, children }: { state: ShowState; children: Reac
       fov.current.value = smoothDamp(fov.current.value, cues.shot.fov, fov.current.v, st, dt);
     }
 
-    // A camera operator's hands: never quite still.
+    // A camera operator's hands: never quite still. Slow, uneven drift made
+    // of waves that never line up, so it never visibly repeats.
     const s = now * 0.001;
     const hand = cues.handheld * 0.016;
+    const drift = (a: number, b: number, c: number, phase: number) =>
+      Math.sin(s * a + phase) * 0.6 + Math.sin(s * b + phase * 1.7) * 0.3 + Math.sin(s * c + phase * 2.3) * 0.1;
+    // The burst's jolt: quick, dying away, in all directions.
+    const jolt = cues.shake * 0.045;
     const cam = camera as THREE.PerspectiveCamera;
     const p = position.current.value;
     const tg = target.current.value;
-    cam.position.set(p.x + Math.sin(s * 0.9) * hand + Math.sin(s * 2.3) * hand * 0.3, p.y + Math.sin(s * 1.3 + 1) * hand * 0.7, p.z);
-    cam.lookAt(tg.x + Math.sin(s * 0.7) * hand * 0.5, tg.y, tg.z);
+    cam.position.set(
+      p.x + drift(0.71, 1.93, 4.1, 0) * hand + Math.sin(s * 47) * jolt,
+      p.y + drift(0.93, 2.41, 5.3, 1.3) * hand * 0.7 + Math.sin(s * 53 + 1) * jolt * 0.8,
+      p.z + drift(0.53, 1.37, 3.7, 2.1) * hand * 0.4,
+    );
+    cam.lookAt(tg.x + drift(0.61, 1.71, 3.3, 3.7) * hand * 0.6, tg.y + Math.sin(s * 41 + 2) * jolt * 0.5, tg.z);
+    // A lean, for the intro's crane swing; zero almost everywhere else.
+    const roll = (cues.shot.roll ?? 0) + drift(0.37, 0.97, 2.9, 5.1) * hand * 0.05;
+    if (roll !== 0) cam.rotateZ(roll);
     if (Math.abs(cam.fov - fov.current.value) > 0.01) {
       cam.fov = fov.current.value;
       cam.updateProjectionMatrix();
